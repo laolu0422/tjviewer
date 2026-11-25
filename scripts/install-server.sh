@@ -13,7 +13,8 @@
 set -euo pipefail
 
 REPO="laolu0422/tjviewer"
-ASSET="tjviewer-server-linux-x64.tar.gz"
+ASSET_PREFIX="tjviewer-server-linux-x64"
+ASSET="$ASSET_PREFIX.tar.gz"
 INSTALL_DIR="/opt/tjviewer"
 DATA_DIR="/var/lib/tjviewer"
 CRED_FILE="/etc/tjviewer/admin.credentials"
@@ -74,10 +75,23 @@ if [ -n "$PKG_FILE" ]; then
     log "使用本地安装包：$SRC"
 else
     if [ "$VERSION" = "latest" ]; then
+        # 发布资产带版本号（如 tjviewer-server-linux-x64-v1.0.6.tar.gz）：
+        # 先通过 releases/latest 的重定向解析 tag，再拼出真实资产名。
+        LATEST_TAG="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+            "https://github.com/$REPO/releases/latest" 2>/dev/null | sed -n 's|.*/tag/||p' | head -n1 || true)"
+        if [ -n "$LATEST_TAG" ]; then
+            ASSET="$ASSET_PREFIX-$LATEST_TAG.tar.gz"
+        fi
         URL="https://github.com/$REPO/releases/latest/download/$ASSET"
     else
-        URL="https://github.com/$REPO/releases/download/$VERSION/$ASSET"
+        case "$VERSION" in
+            v*) TAG="$VERSION" ;;
+            *) TAG="v$VERSION" ;;
+        esac
+        ASSET="$ASSET_PREFIX-$TAG.tar.gz"
+        URL="https://github.com/$REPO/releases/download/$TAG/$ASSET"
     fi
+    log "资产：$ASSET"
     SRC="$TMP_DIR/$ASSET"
     CURL_OPTS=(-fL --retry 2 --connect-timeout 15 --speed-time 60 --speed-limit 1024)
     log "下载 $URL"

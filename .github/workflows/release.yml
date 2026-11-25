@@ -1,8 +1,9 @@
 name: release
 
-# 推送 v* 标签时自动构建并发布：
-#   server 任务（ubuntu）：tjviewer-server-linux-x64.tar.gz / tjviewer-server-win-x64.zip
-#   client 任务（windows）：tjviewer-client-win-x64.zip（含 ffmpeg）
+# 推送 v* 标签时自动构建并发布（资产文件名统一带版本号）：
+#   server 任务（ubuntu）：tjviewer-server-linux-x64-<tag>.tar.gz / tjviewer-server-win-x64-<tag>.zip
+#   client 任务（windows）：tjviewer-client-win-x64-<tag>.zip（含 ffmpeg、后台服务、安装/卸载脚本）
+# 如配置了仓库 Secrets（SIGNING_PFX_BASE64 / SIGNING_PFX_PASSWORD），客户端产物会做 Authenticode 签名。
 on:
   push:
     tags:
@@ -32,13 +33,14 @@ jobs:
         run: |
           dotnet publish src/TjViewer.Server -c Release -r win-x64 --self-contained true -o out/server-win
 
-      - name: Package servers
+      - name: Package servers (versioned)
         run: |
+          TAG="${GITHUB_REF_NAME}"
           cp LICENSE THIRD-PARTY-NOTICES.txt out/server/
-          tar -czf tjviewer-server-linux-x64.tar.gz -C out/server .
+          tar -czf "tjviewer-server-linux-x64-$TAG.tar.gz" -C out/server .
           cp LICENSE THIRD-PARTY-NOTICES.txt scripts/start-server.cmd out/server-win/
-          (cd out/server-win && zip -qr ../../tjviewer-server-win-x64.zip .)
-          ls -lh tjviewer-server-*.tar.gz tjviewer-server-*.zip
+          (cd out/server-win && zip -qr "../../tjviewer-server-win-x64-$TAG.zip" .)
+          ls -lh tjviewer-server-*-"$TAG".*
 
       - name: Publish server release
         uses: softprops/action-gh-release@v2
@@ -46,8 +48,8 @@ jobs:
           name: ${{ github.ref_name }}
           generate_release_notes: true
           files: |
-            tjviewer-server-linux-x64.tar.gz
-            tjviewer-server-win-x64.zip
+            tjviewer-server-linux-x64-${{ github.ref_name }}.tar.gz
+            tjviewer-server-win-x64-${{ github.ref_name }}.zip
 
   client:
     needs: server
@@ -59,13 +61,15 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Publish client (self-contained win-x64)
+      - name: Publish client and service (self-contained win-x64)
         shell: pwsh
         run: |
           dotnet publish src/TjViewer.Client -c Release -r win-x64 --self-contained true -o out/client
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet publish src/TjViewer.Service -c Release -r win-x64 --self-contained true -o out/client/service
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Bundle ffmpeg and package
+      - name: Bundle ffmpeg, license and install scripts
         shell: pwsh
         run: |
           Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile ffmpeg.zip
@@ -77,11 +81,36 @@ jobs:
           if (Test-Path $lic) { Copy-Item $lic out/client/ffmpeg-LICENSE.txt }
           Copy-Item LICENSE out/client/
           Copy-Item THIRD-PARTY-NOTICES.txt out/client/
-          Compress-Archive -Path out/client/* -DestinationPath tjviewer-client-win-x64.zip -CompressionLevel Optimal
-          Get-Item tjviewer-client-win-x64.zip | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}
+          Copy-Item scripts/install-client.ps1 out/client/
+          Copy-Item scripts/install-client.cmd out/client/
+          Copy-Item scripts/uninstall-client.ps1 out/client/
+
+      - name: Sign binaries (optional)
+        shell: pwsh
+        env:
+          SIGNING_PFX_BASE64: ${{ secrets.SIGNING_PFX_BASE64 }}
+          SIGNING_PFX_PASSWORD: ${{ secrets.SIGNING_PFX_PASSWORD }}
+        run: |
+          if (-not $env:SIGNING_PFX_BASE64) {
+            Write-Host "未配置 SIGNING_PFX_BASE64，跳过代码签名"
+            exit 0
+          }
+          $pfx = Join-Path $PWD 'signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGNING_PFX_BASE64))
+          $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($pfx, $env:SIGNING_PFX_PASSWORD)
+          Export-Certificate -Cert $cert -FilePath out/client/tjviewer-signing.cer | Out-Null
+          & ./scripts/sign.ps1 -Path out/client -Pfx $pfx -Password $env:SIGNING_PFX_PASSWORD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Package client (versioned)
+        shell: pwsh
+        run: |
+          $zip = "tjviewer-client-win-x64-${{ github.ref_name }}.zip"
+          Compress-Archive -Path out/client/* -DestinationPath $zip -CompressionLevel Optimal
+          Get-Item $zip | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}
 
       - name: Publish client release asset
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}
-          files: tjviewer-client-win-x64.zip
+          files: tjviewer-client-win-x64-${{ github.ref_name }}.zip

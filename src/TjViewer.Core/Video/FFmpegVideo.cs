@@ -72,7 +72,7 @@ public static class HardwareCodecs
     /// <summary>各编码器的低延迟参数。</summary>
     internal static string OptionsFor(string encoder) => encoder switch
     {
-        "h264_nvenc" => "-preset p1 -tune ull -rc cbr",
+        "h264_nvenc" => "-preset p1 -tune ull -rc cbr -delay 0",
         "h264_qsv" => "-preset veryfast -async_depth 1",
         "h264_amf" => "-usage ultralowlatency -quality speed -rc cbr",
         _ => "-preset ultrafast -tune zerolatency",
@@ -216,7 +216,7 @@ public sealed class VideoEncoder : IAsyncDisposable
             ? $"-vf scale={outputWidth}:{outputHeight}:flags=fast_bilinear "
             : "";
         var args = $"-hide_banner -loglevel error -f rawvideo -pix_fmt bgra -video_size {width}x{height} -framerate {fps} -i pipe:0 " +
-                   $"{scale}-c:v {EncoderName} {HardwareCodecs.OptionsFor(EncoderName)} -b:v {bitrateKbps}k -maxrate {bitrateKbps}k -bufsize {bitrateKbps * 2}k -g {fps * 2} -bf 0 -pix_fmt {HardwareCodecs.PixFmtFor(EncoderName)} -flush_packets 1 -f h264 pipe:1";
+                   $"{scale}-c:v {EncoderName} {HardwareCodecs.OptionsFor(EncoderName)} -flags low_delay -b:v {bitrateKbps}k -maxrate {bitrateKbps}k -bufsize {bitrateKbps * 2}k -g {fps * 2} -bf 0 -pix_fmt {HardwareCodecs.PixFmtFor(EncoderName)} -flush_packets 1 -f h264 pipe:1";
         _proc = ProcHelper.Start(ffmpeg, args);
         _readTask = Task.Run(ReadLoop);
     }
@@ -275,7 +275,9 @@ public sealed class VideoDecoder : IAsyncDisposable
         _frameSize = width * height * 4;
         HwAccel = HardwareCodecs.SelectDecoderHwAccel(ffmpeg);
         var hw = HwAccel is null ? "" : $"-hwaccel {HwAccel} ";
-        var args = $"-hide_banner -loglevel error -probesize 32768 -analyzeduration 100000 {hw}-f h264 -i pipe:0 -f rawvideo -pix_fmt bgra -s {width}x{height} -flush_packets 1 pipe:1";
+        // low_delay + nobuffer 消除解码侧帧缓存；软件解码用 slice 线程避免 frame 线程引入整帧时延
+        var threads = HwAccel is null ? "-thread_type slice " : "";
+        var args = $"-hide_banner -loglevel error -probesize 32768 -analyzeduration 0 {hw}-fflags nobuffer -flags low_delay {threads}-f h264 -i pipe:0 -f rawvideo -pix_fmt bgra -s {width}x{height} -flush_packets 1 pipe:1";
         _proc = ProcHelper.Start(ffmpeg, args);
         _readTask = Task.Run(ReadLoop);
     }

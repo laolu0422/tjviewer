@@ -14,6 +14,8 @@
 - **账户与设备**：邮箱必填注册；用户名或邮箱 + 密码登录；Argon2id 密码哈希；JWT 访问令牌 + 刷新令牌（仅存哈希）；自有 SMTP 发送找回密码邮件；**记住账号密码 / 自动登录 / 退出登录**（密码经 DPAPI 加密存储）。
 - **网页管理后台**：用户启用/禁用/删除/重置密码，查看设备、会话、审计日志与系统配置。
 - **客户端易用性**：设备列表、一键连接、开机自启（HKCU Run，用户确认后写入）；紫白 / 紫黑主题跟随系统切换，自绘标题栏与 TJV 应用图标。
+- **Windows 安装与后台服务**：一键安装到 `%ProgramFiles%\TjViewer`，注册 `TjViewerService` 系统服务（LocalSystem、开机自启、无需用户登录即可运行、崩溃自动重启、用户登录后自动拉起客户端）；安装器配置 High 调度优先级、防火墙入站规则与代码签名证书信任，支持静默/批量部署。
+- **代码签名**：提供自签名证书生成与 Authenticode 签名脚本；安装包随附 `.cer` 并由安装器导入本机信任存储（生产环境可替换为 CA 签发的 PFX）。
 
 ## 架构
 
@@ -38,9 +40,12 @@
 src/
   TjViewer.Server/    服务端：鉴权、设备、管理后台、信令、文件中转
   TjViewer.Client/    WPF 客户端：登录、设备列表、远程控制窗口、托盘/自启
+  TjViewer.Service/   Windows 后台服务：开机自启、会话拉起、崩溃恢复
   TjViewer.Core/      采集、编解码、KCP、网络、音频、键鼠注入、文件传输
   TjViewer.Shared/    客户端与服务端共用的协议、DTO、路由与画质档位
-build.ps1             发布脚本（发布 server/client 并捆绑 ffmpeg）
+scripts/              安装/卸载、签名、服务器安装脚本
+VERSION               版本号唯一来源（构建产物文件名与程序集版本）
+build.ps1             发布脚本（server/client/service + ffmpeg + 签名）
 TjViewer.slnx         解决方案
 ```
 
@@ -49,25 +54,32 @@ TjViewer.slnx         解决方案
 - Windows 10 1809+ / Windows 11，x64
 - [.NET 10 SDK](https://dotnet.microsoft.com/)（构建）；运行非自包含发布时需要 .NET 10 Desktop Runtime
 - `ffmpeg.exe`（**客户端必需**）：需包含 `h264_nvenc` / `h264_qsv` / `h264_amf` 任一硬件编码器或 `libx264`，以及 `d3d11va` 硬解支持（官方 gpl 构建即可）。放在客户端目录、`tools\` 子目录或 `PATH` 中均可
-- 被控端需要已登录的桌面会话（RDP 或无人登录环境下 DXGI 采集可能不可用，会回退 GDI）
+- 被控端需要已登录的桌面会话（无人登录时 DXGI 采集不可用，会回退 GDI；后台服务可在用户登录后自动拉起客户端）
 
 ## 构建
+
+版本号来自根目录 `VERSION`（同时写入程序集版本与产物文件名），也可用 `-Version` 覆盖。
 
 ```powershell
 dotnet build TjViewer.slnx
 
-# 自包含发布（无需目标机安装 .NET）：
-#   publish/server-linux-x64  → dist/tjviewer-server-linux-x64.tar.gz
-#   publish/server-win-x64    → dist/tjviewer-server-win-x64.zip（含 start-server.cmd）
-#   publish/client-win-x64    → dist/tjviewer-client-win-x64.zip（自动捆绑 ffmpeg）
+# 自包含发布（无需目标机安装 .NET），产物文件名带版本号：
+#   publish/server-linux-x64  → dist/tjviewer-server-linux-x64-v1.0.6.tar.gz
+#   publish/server-win-x64    → dist/tjviewer-server-win-x64-v1.0.6.zip（含 start-server.cmd）
+#   publish/client-win-x64    → dist/tjviewer-client-win-x64-v1.0.6.zip
+#                               （含 ffmpeg、service/、安装/卸载脚本、证书）
 pwsh -File build.ps1
+
+# 带签名构建（默认自动使用 dist/signing 下的证书）
+pwsh -File scripts/new-signing-cert.ps1
+pwsh -File build.ps1 -SignPfx dist/signing/tjviewer-signing.pfx -SignPassword ***
 ```
 
 ## 部署到 Windows 服务器
 
 Windows 服务器包同样是自包含发布，目标机无需安装 .NET：
 
-1. 解压 `tjviewer-server-win-x64.zip` 到任意目录
+1. 解压 `tjviewer-server-win-x64-v1.0.6.zip` 到任意目录
 2. 双击 `start-server.cmd`（默认 5000 端口，也可执行 `start-server.cmd 8080`）
 
 脚本会以 `0.0.0.0:5000` 启动服务；数据库 `tjviewer.db` 与首次启动生成的管理员口令 `admin.credentials` 都在解压目录。管理后台地址 `http://127.0.0.1:5000/admin.html`。局域网内其他电脑访问时，需在 Windows 防火墙放行 TCP 5000。
@@ -95,15 +107,61 @@ sudo tjviewer logs         # 实时日志
 sudo tjviewer restart      # 重启
 ```
 
-**离线安装**（服务器无法访问 GitHub）：把 `dist/` 下的 `install-server.sh` 与 `tjviewer-server-linux-x64.tar.gz` 一起上传后执行：
+**离线安装**（服务器无法访问 GitHub）：把 `dist/` 下的 `install-server.sh` 与 `tjviewer-server-linux-x64-v1.0.6.tar.gz` 一起上传后执行：
 
 ```bash
-sudo bash install-server.sh --file /tmp/tjviewer-server-linux-x64.tar.gz
+sudo bash install-server.sh --file /tmp/tjviewer-server-linux-x64-v1.0.6.tar.gz
 ```
 
 可选参数：`--port 5000` 指定端口、`--uninstall` 卸载（保留数据）、`TJVIEWER_PUBLIC_URL` 指定对外地址。若启用 ufw，脚本会自动放行端口；其他防火墙请手动放行 TCP 5000。
 
 > 公网部署建议在 5000 端口前加 Nginx/Caddy 反向代理并启用 HTTPS（客户端服务器地址填 `https://域名`）。
+
+## Windows 客户端安装（Program Files + 后台服务）
+
+客户端发行包（`tjviewer-client-win-x64-v1.0.6.zip`）已包含 `TjViewer.exe`、`service\TjViewer.Service.exe`、`ffmpeg.exe`、安装/卸载脚本与签名证书。解压后以**管理员权限**运行：
+
+```powershell
+# 交互安装（复制到 %ProgramFiles%\TjViewer，注册并启动服务）
+powershell -ExecutionPolicy Bypass -File .\install-client.ps1
+
+# 静默 / 批量部署（SCCM、Intune、域脚本）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install-client.ps1 -Silent -NoShortcut
+```
+
+安装器会完成：
+
+| 项目 | 说明 |
+| --- | --- |
+| 安装目录 | `%ProgramFiles%\TjViewer`，同时写入“应用和功能”卸载项 |
+| 后台服务 | `TjViewerService`：`LocalSystem` 身份、`start=auto`、崩溃自动重启；无用户登录也持续运行，用户登录后自动在会话中拉起客户端（`--minimized`） |
+| 调度优先级 | `IFEO\TjViewer.exe\PerfOptions`：`CpuPriorityClass=3`（High）、`IoPriority=3`；客户端启动时再次兜底提升，ffmpeg 子进程继承 |
+| 防火墙 | 按程序放行入站 TCP/UDP（P2P 打洞必需），不开放固定端口 |
+| 证书信任 | 将随包 `tjviewer-signing.cer` 导入本机“受信任的发布者”和“受信任的根证书颁发机构” |
+| 其他 | 开始菜单快捷方式、`%ProgramData%\TjViewer\logs` 日志目录 |
+
+常用参数：`-NoService`（不装服务）、`-NoFirewall`、`-NoCertTrust`（证书由域策略统一管理时）、`-NoShortcut`、`-Silent`。安装日志：`%ProgramData%\TjViewer\logs\install.log`。
+
+卸载：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "%ProgramFiles%\TjViewer\uninstall-client.ps1"
+```
+
+> 能力边界：Windows 在无人登录/锁屏时使用独立的安全桌面（Winlogon），普通进程无法采集该桌面。本服务保证“无需登录即可运行 + 登录后立即接管 + 异常自动恢复”，**不等同于**锁屏前画面采集；后者需单独部署带 `uiAccess` 的签名 SecureAgent。Ctrl+Alt+Del 也无法通过普通输入注入模拟。
+
+## 代码签名
+
+```powershell
+# 1) 生成自签名代码签名证书（写入 dist/signing，dist 已被 gitignore）
+pwsh -File scripts/new-signing-cert.ps1
+
+# 2) 对已发布目录签名（也可由 build.ps1 自动调用）
+pwsh -File scripts/sign.ps1 -Path publish/client-win-x64
+pwsh -File scripts/sign.ps1 -Path publish/client-win-x64 -Pfx cert.pfx -Password ***
+```
+
+自签名证书只有在目标机信任后签名才显示“有效”——安装器会自动导入随包 `.cer`。对外分发建议使用 CA 签发的代码签名证书：CI 配置 `SIGNING_PFX_BASE64`、`SIGNING_PFX_PASSWORD` 两个 Secrets 后，Release 工作流会自动签名并附带 `.cer`。
 
 ## 运行
 
@@ -172,6 +230,17 @@ dotnet run --project src/TjViewer.Client
   - `TJVIEWER_HWACCEL=none`：强制软件解码
 - 诊断：`FFmpegLocator.Diagnostics` 事件会输出实际选用的编码器、解码方式与探测失败原因。
 
+## 低延迟与流畅度优化
+
+以“操作跟手、画面不积压”为目标，链路各环节都做了针对性调优：
+
+- **KCP**：`NoDelay(1, 5, 2, 1)`（5ms 快节拍、快速重传、关闭拥塞控制）+ 512 段收发窗口，避免 10Mbps 高码率下窗口不足；UDP 收发缓冲提升到 4MB，降低突发丢包。
+- **采集**：DXGI 仅等待 2–4ms，无桌面更新时复用上一帧；发送端按设定帧率精确节拍、静止画面持续推流，保证任意时刻操作都能立即反馈。
+- **编码**：NVENC `-preset p1 -tune ull -delay 0`、QSV `-async_depth 1`、AMF `ultralowlatency`，统一 `-flags low_delay`、无 B 帧、`-flush_packets 1`，缩短编码器内部排队。
+- **解码**：`-flags low_delay -fflags nobuffer -analyzeduration 0`；软件解码使用 slice 线程，避免 frame 线程引入整帧时延。
+- **系统调度**：客户端启动即 `timeBeginPeriod(1)` 提升时钟精度（默认 15.6ms 粒度会直接抬高排队时延），进程优先级 High（安装器 IFEO + 运行时兜底，ffmpeg 继承）。
+- **渲染**：控制端渲染忙时只保留最新帧丢弃旧帧，120fps 下不会积压 WPF UI 线程。
+
 ## 安全设计
 
 - 密码使用 Argon2id 哈希；刷新令牌、找回密码令牌只保存 SHA256 摘要，且一次性使用。
@@ -184,7 +253,9 @@ dotnet run --project src/TjViewer.Client
 
 - 仅支持 Windows 作为被控端与控制端；服务端可跨平台运行。
 - 对称型 NAT 下 UDP 打洞可能失败，此时自动回退服务器中转（音视频/输入/文件均可用，延迟与带宽受服务器限制）。
-- 需要自行提供 `ffmpeg.exe`，未直接打包进仓库。
+- 需要自行提供 `ffmpeg.exe`，未直接打包进仓库（官方发行包已自动捆绑）。
+- 无人登录/锁屏时 Windows 使用独立安全桌面，普通应用无法采集与操作；后台服务只保证进程常驻与登录后自动接管。Ctrl+Alt+Del 无法通过普通输入注入模拟。
+- 自签名代码签名证书只在导入了该证书的机器上显示为“有效”；对外分发请使用 CA 签发的证书。
 
 ## 许可
 

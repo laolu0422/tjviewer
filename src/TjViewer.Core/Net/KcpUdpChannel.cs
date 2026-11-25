@@ -22,8 +22,17 @@ public class KcpUdpChannel : IMessageChannel
     {
         Conv = conv;
         _udp = new UdpClient(localPort);
+        // 大接收/发送缓冲：120fps 高码率与突发重传时减少内核丢包
+        try
+        {
+            _udp.Client.ReceiveBufferSize = 4 * 1024 * 1024;
+            _udp.Client.SendBufferSize = 4 * 1024 * 1024;
+        }
+        catch { }
         _kcp = new Kcp(conv);
-        _kcp.NoDelay(1, 10, 2, 1);
+        // 5ms 快节拍 + 关闭拥塞控制，配合 512 段窗口降低视频排队时延
+        _kcp.NoDelay(1, 5, 2, 1);
+        _kcp.WndSize(512, 512);
         _kcp.SetOutput((buf, len) => { if (_remote is not null) _udp.Send(buf, len, _remote); });
     }
 
@@ -86,7 +95,8 @@ public class KcpUdpChannel : IMessageChannel
             }
             if (received is not null)
                 foreach (var msg in received) MessageReceived?.Invoke(msg);
-            try { await Task.Delay(10, _cts.Token); }
+            // 与 NoDelay 的 5ms 区间对齐；客户端启动时已调用 timeBeginPeriod(1) 保证精度
+            try { await Task.Delay(5, _cts.Token); }
             catch (OperationCanceledException) { break; }
         }
     }

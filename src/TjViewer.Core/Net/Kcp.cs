@@ -69,9 +69,17 @@ public class Kcp
             _nodelay = (uint)nodelay;
             _rxMinrto = nodelay != 0 ? IKCP_RTO_NDL : IKCP_RTO_MIN;
         }
-        if (interval >= 0) _interval = (uint)Math.Clamp(interval, 10, 5000);
+        if (interval >= 0) _interval = (uint)Math.Clamp(interval, 5, 5000);
         if (resend >= 0) _fastResend = (uint)resend;
         if (nc >= 0) _noCongestion = nc != 0;
+        return 0;
+    }
+
+    /// <summary>收发窗口大小。默认 32 在 10Mbps / 长 RTT 下会限制吞吐，媒体通道需放大。</summary>
+    public int WndSize(uint snd, uint rcv)
+    {
+        if (snd > 0) _sndWnd = snd;
+        if (rcv > 0) _rcvWnd = rcv;
         return 0;
     }
     private uint _fastResend;

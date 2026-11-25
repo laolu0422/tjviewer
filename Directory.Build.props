@@ -1,0 +1,11 @@
+<Project>
+
+  <!-- 版本号唯一来源：VERSION 文件（构建产物文件名与程序集版本都从这里读取） -->
+  <PropertyGroup>
+    <Version>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)VERSION').Trim())</Version>
+    <Company>laolu0422</Company>
+    <Product>TjViewer</Product>
+    <Copyright>Copyright (c) 2026 laolu0422</Copyright>
+  </PropertyGroup>
+
+</Project>

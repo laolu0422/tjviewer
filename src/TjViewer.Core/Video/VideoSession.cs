@@ -93,7 +93,8 @@ public sealed class HostVideoSender : IAsyncDisposable
         while (!_cts.IsCancellationRequested)
         {
             int fps = Math.Max(1, _fps);
-            var frame = _capturer.CaptureFrame(Math.Max(1, 1000 / fps));
+            // 只等待极短时间：无更新时立刻复用上一帧，避免采集阻塞编码节拍（排队时延最小化）
+            var frame = _capturer.CaptureFrame(Math.Clamp(1000 / fps / 4, 2, 4));
             if (frame is not null)
             {
                 lock (_encLock)

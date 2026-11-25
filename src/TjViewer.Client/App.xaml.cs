@@ -1,6 +1,7 @@
 using System.Windows;
 using TjViewer.Client.Services;
 using TjViewer.Client.Views;
+using TjViewer.Core;
 
 namespace TjViewer.Client;
 
@@ -11,6 +12,8 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        RuntimeTuning.Apply(); // 1ms 定时器 + 高优先级，降低采集/编码/渲染排队时延
+        ServiceIntegration.ClearUserExit(); // 手动启动时恢复后台服务托管
         ThemeManager.Initialize();
         _session = new AppSession();
         ShowLogin();

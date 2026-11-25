@@ -60,7 +60,12 @@ public partial class MainWindow : Window
         _tray.DoubleClick += (_, _) => ShowFromTray();
         var menu = new System.Windows.Forms.ContextMenuStrip();
         menu.Items.Add("打开主界面", null, (_, _) => ShowFromTray());
-        menu.Items.Add("退出", null, (_, _) => { _reallyClose = true; Close(); });
+        menu.Items.Add("退出", null, (_, _) =>
+        {
+            _reallyClose = true;
+            ServiceIntegration.MarkUserExit(); // 用户主动退出，后台服务本会话不再拉起
+            Close();
+        });
         _tray.ContextMenuStrip = menu;
     }
 
