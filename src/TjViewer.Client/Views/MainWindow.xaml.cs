@@ -9,6 +9,8 @@ public partial class MainWindow : Window
 {
     private readonly MainViewModel _vm;
     private readonly AppSession _s;
+    private System.Windows.Forms.NotifyIcon? _tray;
+    private bool _reallyClose;
 
     public MainWindow(AppSession s)
     {
@@ -23,8 +25,56 @@ public partial class MainWindow : Window
         {
             try { await _vm.InitializeAsync(); }
             catch (Exception ex) { MessageBox.Show(this, ex.Message, "初始化失败"); }
+            if (Environment.GetCommandLineArgs().Contains("--minimized")) Hide();
         };
-        Closed += async (_, _) => await _vm.ShutdownAsync();
+        InitTray();
+        UpdateAutoStartButton();
+        Closing += (_, e) =>
+        {
+            if (!_reallyClose) { e.Cancel = true; Hide(); } // 最小化到托盘而非退出
+        };
+        Closed += async (_, _) => { _tray?.Dispose(); await _vm.ShutdownAsync(); };
+    }
+
+    private void InitTray()
+    {
+        _tray = new System.Windows.Forms.NotifyIcon
+        {
+            Icon = System.Drawing.SystemIcons.Application,
+            Text = "TjViewer 远程控制",
+            Visible = true,
+        };
+        _tray.DoubleClick += (_, _) => ShowFromTray();
+        var menu = new System.Windows.Forms.ContextMenuStrip();
+        menu.Items.Add("打开主界面", null, (_, _) => ShowFromTray());
+        menu.Items.Add("退出", null, (_, _) => { _reallyClose = true; Close(); });
+        _tray.ContextMenuStrip = menu;
+    }
+
+    private void ShowFromTray()
+    {
+        Show();
+        WindowState = WindowState.Normal;
+        Activate();
+    }
+
+    private void UpdateAutoStartButton()
+        => AutoStartBtn.Content = AutoStart.IsEnabled() ? "开机自启：开" : "开机自启：关";
+
+    private void OnAutoStart(object sender, RoutedEventArgs e)
+    {
+        if (AutoStart.IsEnabled())
+        {
+            AutoStart.Disable();
+        }
+        else
+        {
+            var r = MessageBox.Show(this, "开启开机自启后，TjViewer 将在你登录 Windows 时自动运行并上线。是否开启？",
+                "开机自启", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (r != MessageBoxResult.Yes) return;
+            AutoStart.Enable();
+        }
+        UpdateAutoStartButton();
     }
 
     private async void OnConnect(object sender, RoutedEventArgs e)
