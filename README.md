@@ -58,9 +58,19 @@ dotnet build TjViewer.slnx
 
 # 自包含发布（无需目标机安装 .NET）：
 #   publish/server-linux-x64  → dist/tjviewer-server-linux-x64.tar.gz
+#   publish/server-win-x64    → dist/tjviewer-server-win-x64.zip（含 start-server.cmd）
 #   publish/client-win-x64    → dist/tjviewer-client-win-x64.zip（自动捆绑 ffmpeg）
 pwsh -File build.ps1
 ```
+
+## 部署到 Windows 服务器
+
+Windows 服务器包同样是自包含发布，目标机无需安装 .NET：
+
+1. 解压 `tjviewer-server-win-x64.zip` 到任意目录
+2. 双击 `start-server.cmd`（默认 5000 端口，也可执行 `start-server.cmd 8080`）
+
+脚本会以 `0.0.0.0:5000` 启动服务；数据库 `tjviewer.db` 与首次启动生成的管理员口令 `admin.credentials` 都在解压目录。管理后台地址 `http://127.0.0.1:5000/admin.html`。局域网内其他电脑访问时，需在 Windows 防火墙放行 TCP 5000。
 
 ## 部署到 Ubuntu 服务器
 

@@ -14,6 +14,7 @@ $dist = Join-Path $root 'dist'
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 # 安装脚本随产物一起分发，便于离线安装
 Copy-Item (Join-Path $root 'scripts/install-server.sh') (Join-Path $dist 'install-server.sh') -Force
+Copy-Item (Join-Path $root 'scripts/start-server.cmd') (Join-Path $dist 'start-server.cmd') -Force
 
 if (-not $ClientOnly) {
     Write-Host "发布服务器（linux-x64，自包含）…"
@@ -29,6 +30,19 @@ if (-not $ClientOnly) {
     if (Test-Path $tar) { Remove-Item $tar -Force }
     & tar -czf $tar -C $out .
     Write-Host "已生成 $tar"
+
+    Write-Host "发布服务器（win-x64，自包含）…"
+    $winOut = Join-Path $root 'publish/server-win-x64'
+    if (Test-Path $winOut) { Remove-Item $winOut -Recurse -Force }
+    & $dn publish (Join-Path $root 'src/TjViewer.Server') -c Release -r win-x64 --self-contained true -o $winOut
+    if ($LASTEXITCODE -ne 0) { throw "服务器 Windows 发布失败" }
+    Copy-Item (Join-Path $root 'LICENSE') (Join-Path $winOut 'LICENSE') -Force
+    Copy-Item (Join-Path $root 'THIRD-PARTY-NOTICES.txt') $winOut -Force
+    Copy-Item (Join-Path $root 'scripts/start-server.cmd') $winOut -Force
+    $winZip = Join-Path $dist 'tjviewer-server-win-x64.zip'
+    if (Test-Path $winZip) { Remove-Item $winZip -Force }
+    Compress-Archive -Path (Join-Path $winOut '*') -DestinationPath $winZip -CompressionLevel Optimal
+    Write-Host "已生成 $winZip"
 }
 
 if (-not $ServerOnly) {

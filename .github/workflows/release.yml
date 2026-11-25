@@ -28,15 +28,23 @@ jobs:
         run: |
           dotnet publish src/TjViewer.Server -c Release -r linux-x64 --self-contained true -o out/server
 
+      - name: Publish server (self-contained win-x64)
+        run: |
+          dotnet publish src/TjViewer.Server -c Release -r win-x64 --self-contained true -o out/server-win
+
       - name: Package
         run: |
           cp LICENSE THIRD-PARTY-NOTICES.txt out/server/
           tar -czf tjviewer-server-linux-x64.tar.gz -C out/server .
-          ls -lh tjviewer-server-linux-x64.tar.gz
+          cp LICENSE THIRD-PARTY-NOTICES.txt scripts/start-server.cmd out/server-win/
+          (cd out/server-win && zip -qr ../../tjviewer-server-win-x64.zip .)
+          ls -lh tjviewer-server-*.tar.gz tjviewer-server-*.zip
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}
           generate_release_notes: true
-          files: tjviewer-server-linux-x64.tar.gz
+          files: |
+            tjviewer-server-linux-x64.tar.gz
+            tjviewer-server-win-x64.zip
