@@ -56,9 +56,40 @@ TjViewer.slnx         解决方案
 ```powershell
 dotnet build TjViewer.slnx
 
-# 发布到 publish/server 与 publish/client，并自动从 ~/.local/share/ffmpeg 或 PATH 捆绑 ffmpeg
+# 自包含发布（无需目标机安装 .NET）：
+#   publish/server-linux-x64  → dist/tjviewer-server-linux-x64.tar.gz
+#   publish/client-win-x64    → dist/tjviewer-client-win-x64.zip（自动捆绑 ffmpeg）
 pwsh -File build.ps1
 ```
+
+## 部署到 Ubuntu 服务器
+
+服务器包为自包含发布，目标机无需安装 .NET；需要 x86_64 与 systemd。
+
+**一行安装**（从 GitHub Release 下载并注册为 systemd 服务）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/laolu0422/tjviewer/main/scripts/install-server.sh | sudo bash
+```
+
+安装脚本会：解压到 `/opt/tjviewer`、数据放 `/var/lib/tjviewer`、生成随机管理员口令与 JWT 密钥、写入 `tjviewer.service` 并开机自启、安装 `tjviewer` 管理命令。默认监听 `0.0.0.0:5000`，安装结束会打印访问地址与管理员口令（也可用 `sudo tjviewer config` 查看）。
+
+**一行启动 / 管理**：
+
+```bash
+sudo tjviewer start        # 启动（安装时已自动启动并设为开机自启）
+sudo tjviewer status       # 查看状态
+sudo tjviewer logs         # 实时日志
+sudo tjviewer restart      # 重启
+```
+
+**离线安装**（把 `dist/tjviewer-server-linux-x64.tar.gz` 上传到服务器后）：
+
+```bash
+sudo bash install-server.sh --file /tmp/tjviewer-server-linux-x64.tar.gz
+```
+
+可选参数：`--port 5000` 指定端口、`--uninstall` 卸载（保留数据）、`TJVIEWER_PUBLIC_URL` 指定对外地址。若启用 ufw，脚本会自动放行端口；其他防火墙请手动放行 TCP 5000。
 
 ## 运行
 
