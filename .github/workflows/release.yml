@@ -30,6 +30,7 @@ jobs:
 
       - name: Package
         run: |
+          cp LICENSE THIRD-PARTY-NOTICES.txt out/server/
           tar -czf tjviewer-server-linux-x64.tar.gz -C out/server .
           ls -lh tjviewer-server-linux-x64.tar.gz
 
