@@ -18,6 +18,13 @@ public partial class MainViewModel : ObservableObject
 
     [ObservableProperty] private string status = "未连接";
     [ObservableProperty] private string currentUser = "";
+    [ObservableProperty] private string watchCode = "";
+    [ObservableProperty] private string watchPassword = "";
+    [ObservableProperty] private string controlCode = "";
+    [ObservableProperty] private string controlPassword = "";
+    [ObservableProperty] private bool fixedCode;
+
+    public string LastCode => _s.Settings.LastCode ?? "";
 
     public string ThisDeviceId => _s.DeviceId ?? "";
 
@@ -43,11 +50,51 @@ public partial class MainViewModel : ObservableObject
         _signal.ConnectIncoming += p => OnUi(() => IncomingConnect?.Invoke(p));
         _signal.ConnectReady += p => OnUi(() => OnConnectReady(p));
         _signal.ConnectFailed += p => OnUi(() => { Status = p.Reason; Notify?.Invoke(p.Reason); });
-        _signal.SessionEnd += _ => OnUi(() => Notify?.Invoke("会话已结束"));
+        _signal.CodesUpdated += p => OnUi(() => ApplyCodes(p.Codes));
+        _signal.SessionEnd += evt => OnUi(() =>
+        {
+            Status = "会话已结束";
+            foreach (var s in _sessions.ToArray()) s.NotifyEnded();
+            _ = RefreshDevicesSafeAsync();
+        });
         _signal.Disconnected += reason => OnUi(() => Status = "信令断开：" + reason);
         await _signal.ConnectAsync();
         Status = "信令已连接";
         StartHeartbeat();
+        await LoadCodesAsync();
+    }
+
+    private async Task RefreshDevicesSafeAsync()
+    {
+        try { await RefreshDevices(); } catch { }
+    }
+
+    public async Task LoadCodesAsync()
+    {
+        if (_s.DeviceId is null) return;
+        try { ApplyCodes(await _api.GetCodes(_s.DeviceId, FixedCode)); }
+        catch { /* 连接码获取失败不阻塞主流程 */ }
+    }
+
+    /// <summary>切换固定/动态连接码（固定码由服务端持久化，动态码每次会话重建）。</summary>
+    public async Task SetFixedCodeAsync(bool value)
+    {
+        if (_s.DeviceId is null) return;
+        try
+        {
+            ApplyCodes(await _api.GetCodes(_s.DeviceId, value));
+            Status = value ? "已启用固定连接码" : "已改用动态连接码";
+        }
+        catch (Exception ex) { Status = ex.Message; }
+    }
+
+    private void ApplyCodes(DeviceCodes c)
+    {
+        WatchCode = c.WatchCode;
+        WatchPassword = c.WatchPassword;
+        ControlCode = c.ControlCode;
+        ControlPassword = c.ControlPassword;
+        FixedCode = c.FixedCode;
     }
 
     public async Task RefreshDevices()
@@ -69,17 +116,32 @@ public partial class MainViewModel : ObservableObject
     private void OnConnectReady(ConnectReadyPayload p)
     {
         if (_signal is null) return;
-        var session = new RemoteSession(_signal, _s, p.SessionId, isController: true);
+        var session = new RemoteSession(_signal, _s, p.SessionId, isController: true, p.Mode, p.Capabilities);
         _sessions.Add(session);
         _ = session.StartAsync();
         OpenControl?.Invoke(session);
     }
 
-    public async Task AcceptIncoming(string sessionId)
+    /// <summary>陌生设备：用 9 位连接码 + 验证码连接（mode: watch / control）。</summary>
+    public async Task ConnectByCodeAsync(string code, string password, string mode, bool remember)
+    {
+        if (_signal is null || !_signal.IsConnected) { Notify?.Invoke("信令未连接"); return; }
+        if (code.Length != 9 || !code.All(char.IsDigit)) { Notify?.Invoke("连接码应为 9 位数字"); return; }
+        if (password.Length != 8) { Notify?.Invoke("验证码应为 8 位"); return; }
+        if (remember)
+        {
+            _s.Settings.LastCode = code;
+            SecretStore.Save(_s.Settings);
+        }
+        Status = "正在通过连接码连接…";
+        await _signal.SendCodeConnect(code, password, mode);
+    }
+
+    public async Task AcceptIncoming(string sessionId, string mode = "control", Capabilities caps = Capabilities.All)
     {
         if (_signal is null) return;
         await _signal.Accept(sessionId);
-        var session = new RemoteSession(_signal, _s, sessionId, isController: false);
+        var session = new RemoteSession(_signal, _s, sessionId, isController: false, mode, caps);
         _sessions.Add(session);
         _ = session.StartAsync();
     }
@@ -128,11 +190,15 @@ public partial class MainViewModel : ObservableObject
         else app.Dispatcher.Invoke(a);
     }
 
+    private bool _shutdown;
+
     public async Task ShutdownAsync()
     {
+        if (_shutdown) return;
+        _shutdown = true;
         _hbCts?.Cancel();
-        foreach (var s in _sessions) await s.DisposeAsync();
+        foreach (var s in _sessions.ToArray()) await s.DisposeAsync();
         _sessions.Clear();
-        if (_signal is not null) await _signal.DisposeAsync();
+        if (_signal is not null) { await _signal.DisposeAsync(); _signal = null; }
     }
 }

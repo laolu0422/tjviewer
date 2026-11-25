@@ -11,6 +11,14 @@ public class ClientSettings
     public string DeviceKey { get; set; } = "";
     public string? ProtectedRefreshToken { get; set; }
     public string? Username { get; set; }
+    /// <summary>记住的登录账号（用户名/邮箱）。</summary>
+    public string? SavedAccount { get; set; }
+    /// <summary>DPAPI 加密后的登录密码，仅“记住账密”时保存。</summary>
+    public string? ProtectedPassword { get; set; }
+    public bool RememberCredentials { get; set; }
+    public bool AutoLogin { get; set; }
+    /// <summary>上次使用的陌生设备连接码（不保存验证码）。</summary>
+    public string? LastCode { get; set; }
 }
 
 /// <summary>本地设置与凭据存储：刷新令牌用 DPAPI 加密，禁止明文落盘（见 PRD §7.8）。</summary>

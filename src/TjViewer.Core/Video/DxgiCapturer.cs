@@ -8,8 +8,9 @@ using ResultCode = Vortice.DXGI.ResultCode;
 namespace TjViewer.Core.Video;
 
 /// <summary>
-/// DXGI Desktop Duplication 桌面采集（见 PRD FR-05）：GPU 侧取帧，鼠标指针由 Win32 光标信息合成
-/// （桌面复制不含光标；部分远程会话下 DXGI 指针信息不可用，故统一走 GetCursorInfo）。
+/// DXGI Desktop Duplication 桌面采集（见 PRD FR-05）：GPU 侧取帧，画面不再合成鼠标指针，
+/// 由控制端本地渲染原生光标。桌面无更新时返回上一帧，配合发送端按设定帧率持续推流，
+/// 避免静止画面停止刷新导致操作反馈延迟。
 /// 初始化失败时由调用方回退 <see cref="GdiCapturer"/>。
 /// </summary>
 public sealed class DxgiCapturer : IDesktopCapturer
@@ -23,14 +24,7 @@ public sealed class DxgiCapturer : IDesktopCapturer
     private ID3D11Texture2D? _staging;
     private int _stagingWidth;
     private int _stagingHeight;
-    private byte[] _raw = Array.Empty<byte>();   // 桌面原图（不含指针）
-    private byte[] _frame = Array.Empty<byte>(); // 合成指针后的输出帧
-
-    private IntPtr _cursorHandle;
-    private CursorShape? _cursor;
-    private int _lastCursorX = int.MinValue;
-    private int _lastCursorY = int.MinValue;
-    private bool _lastCursorVisible;
+    private byte[] _frame = Array.Empty<byte>();
 
     public int Width { get; private set; }
     public int Height { get; private set; }
@@ -91,8 +85,7 @@ public sealed class DxgiCapturer : IDesktopCapturer
         Height = (int)desc.ModeDescription.Height;
         if (Width <= 0 || Height <= 0) throw new NotSupportedException("显示输出尺寸无效");
 
-        _raw = new byte[Width * Height * 4];
-        _frame = new byte[_raw.Length];
+        _frame = new byte[Width * Height * 4];
     }
 
     public byte[]? CaptureFrame(int timeoutMs)
@@ -149,29 +142,10 @@ public sealed class DxgiCapturer : IDesktopCapturer
             }
         }
 
-        // 指针：光标形态/位置变化时也需要补发一帧，否则远程看不到指针移动
-        var (hCursor, posX, posY, visible) = CursorShape.Query();
-        var shapeChanged = UpdateCursorShape(hCursor);
-        var cursorMoved = posX != _lastCursorX || posY != _lastCursorY || visible != _lastCursorVisible;
-        _lastCursorX = posX;
-        _lastCursorY = posY;
-        _lastCursorVisible = visible;
-
-        if (!gotDesktop && !cursorMoved && !shapeChanged) return null;
-        if (_raw.Length == 0) return null;
-        if (!visible || _cursor is null) return _raw;
-
-        Buffer.BlockCopy(_raw, 0, _frame, 0, _raw.Length);
-        DrawCursor(_frame, posX, posY);
+        if (_frame.Length == 0) return null;
+        // 无桌面更新/超时也返回上一帧：由发送端按帧率持续编码推流，保证操作即时反馈
+        _ = gotDesktop;
         return _frame;
-    }
-
-    private bool UpdateCursorShape(IntPtr hCursor)
-    {
-        if (hCursor == _cursorHandle && _cursor is not null) return false;
-        _cursorHandle = hCursor;
-        _cursor = CursorShape.Read(hCursor);
-        return true;
     }
 
     private void EnsureStaging(ID3D11Texture2D tex)
@@ -193,13 +167,12 @@ public sealed class DxgiCapturer : IDesktopCapturer
         _stagingWidth = w;
         _stagingHeight = h;
 
-        // 分辨率变化时同步尺寸（调用方据 Width/Height 重建编码器）
+        // 分辨率变化时同步尺寸（调用方据 Width/Height 重建编码器与通知对端）
         if (w != Width || h != Height)
         {
             Width = w;
             Height = h;
-            _raw = new byte[w * h * 4];
-            _frame = new byte[_raw.Length];
+            _frame = new byte[w * h * 4];
         }
     }
 
@@ -208,67 +181,11 @@ public sealed class DxgiCapturer : IDesktopCapturer
         var rowBytes = Width * 4;
         if (pitch == rowBytes)
         {
-            Marshal.Copy(src, _raw, 0, _raw.Length);
+            Marshal.Copy(src, _frame, 0, _frame.Length);
             return;
         }
         for (var y = 0; y < Height; y++)
-            Marshal.Copy(src + y * pitch, _raw, y * rowBytes, rowBytes);
-    }
-
-    private void DrawCursor(byte[] dst, int posX, int posY)
-    {
-        var cur = _cursor!;
-        var w = cur.Width;
-        var h = cur.Height;
-        if (w <= 0 || h <= 0) return;
-
-        // 光标坐标为热点位置，左上角需减去热点偏移
-        var left = posX - cur.HotspotX;
-        var top = posY - cur.HotspotY;
-
-        for (var y = 0; y < h; y++)
-        {
-            var dy = top + y;
-            if (dy < 0 || dy >= Height) continue;
-            for (var x = 0; x < w; x++)
-            {
-                var dx = left + x;
-                if (dx < 0 || dx >= Width) continue;
-                var si = (y * w + x) * 4;
-                if (si + 3 >= cur.Pixels.Length) return;
-                var di = (dy * Width + dx) * 4;
-
-                if (!cur.Mono)
-                {
-                    int a = cur.Pixels[si + 3];
-                    if (a == 0) continue;
-                    if (a == 255)
-                    {
-                        dst[di] = cur.Pixels[si];
-                        dst[di + 1] = cur.Pixels[si + 1];
-                        dst[di + 2] = cur.Pixels[si + 2];
-                    }
-                    else
-                    {
-                        dst[di] = (byte)((cur.Pixels[si] * a + dst[di] * (255 - a)) / 255);
-                        dst[di + 1] = (byte)((cur.Pixels[si + 1] * a + dst[di + 1] * (255 - a)) / 255);
-                        dst[di + 2] = (byte)((cur.Pixels[si + 2] * a + dst[di + 2] * (255 - a)) / 255);
-                    }
-                }
-                else
-                {
-                    // 单色光标：上半为 AND 掩码、下半为 XOR 掩码
-                    var ai = ((y + cur.Height) * w + x) * 4;
-                    if (ai + 3 >= cur.Pixels.Length) return;
-                    var andOn = cur.Pixels[ai] != 0;
-                    var xorOn = cur.Pixels[si] != 0;
-                    if (andOn && !xorOn) continue;                       // 透明
-                    if (!andOn && !xorOn) { dst[di] = dst[di + 1] = dst[di + 2] = 0; }
-                    else if (!andOn) { dst[di] = dst[di + 1] = dst[di + 2] = 255; }
-                    else { dst[di] ^= 255; dst[di + 1] ^= 255; dst[di + 2] ^= 255; }
-                }
-            }
-        }
+            Marshal.Copy(src + y * pitch, _frame, y * rowBytes, rowBytes);
     }
 
     public void Dispose()
@@ -288,168 +205,5 @@ public sealed class DxgiCapturer : IDesktopCapturer
             _adapter?.Dispose();
             _adapter = null;
         }
-    }
-}
-
-/// <summary>Win32 光标读取（GetCursorInfo / GetIconInfo + GetDIBits），转为 32 位 BGRA 供合成。</summary>
-internal sealed class CursorShape
-{
-    public int Width;
-    public int Height;
-    public int HotspotX;
-    public int HotspotY;
-    public bool Mono;
-    public byte[] Pixels = Array.Empty<byte>();
-
-    private const int CURSOR_SHOWING = 0x00000001;
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct POINT { public int X, Y; }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct CURSORINFO
-    {
-        public int cbSize;
-        public int flags;
-        public IntPtr hCursor;
-        public POINT ptScreenPos;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct ICONINFO
-    {
-        public bool fIcon;
-        public int xHotspot;
-        public int yHotspot;
-        public IntPtr hbmMask;
-        public IntPtr hbmColor;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct BITMAP
-    {
-        public int bmType;
-        public int bmWidth;
-        public int bmHeight;
-        public int bmWidthBytes;
-        public ushort bmPlanes;
-        public ushort bmBitsPixel;
-        public IntPtr bmBits;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct BITMAPINFOHEADER
-    {
-        public int biSize;
-        public int biWidth;
-        public int biHeight;
-        public ushort biPlanes;
-        public ushort biBitCount;
-        public int biCompression;
-        public int biSizeImage;
-        public int biXPelsPerMeter;
-        public int biYPelsPerMeter;
-        public int biClrUsed;
-        public int biClrImportant;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RGBQUAD { public byte Blue, Green, Red, Reserved; }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct BITMAPINFO
-    {
-        public BITMAPINFOHEADER bmiHeader;
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 1)]
-        public RGBQUAD[] bmiColors;
-    }
-
-    [DllImport("user32.dll")] private static extern bool GetCursorInfo(ref CURSORINFO pci);
-    [DllImport("user32.dll")] private static extern bool GetIconInfo(IntPtr hIcon, out ICONINFO piconinfo);
-    [DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr hWnd);
-    [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
-    [DllImport("gdi32.dll")] private static extern bool GetObject(IntPtr hgdiobj, int cbBuffer, out BITMAP lpvObject);
-    [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr ho);
-    [DllImport("gdi32.dll")]
-    private static extern int GetDIBits(IntPtr hdc, IntPtr hbm, uint start, uint cLines, byte[] lpvBits, ref BITMAPINFO lpbmi, uint usage);
-
-    /// <summary>返回当前光标句柄、屏幕坐标（热点）与可见性。</summary>
-    public static (IntPtr Handle, int X, int Y, bool Visible) Query()
-    {
-        var ci = new CURSORINFO { cbSize = Marshal.SizeOf<CURSORINFO>() };
-        if (!GetCursorInfo(ref ci) || ci.hCursor == IntPtr.Zero) return (IntPtr.Zero, 0, 0, false);
-        return (ci.hCursor, ci.ptScreenPos.X, ci.ptScreenPos.Y, ci.flags == CURSOR_SHOWING);
-    }
-
-    /// <summary>读取光标位图（彩色 32bpp；单色为 AND+XOR 两段）。</summary>
-    public static CursorShape? Read(IntPtr hCursor)
-    {
-        if (hCursor == IntPtr.Zero) return null;
-        if (!GetIconInfo(hCursor, out var ii)) return null;
-        var hdc = GetDC(IntPtr.Zero);
-        try
-        {
-            if (!GetObject(ii.hbmMask, Marshal.SizeOf<BITMAP>(), out var bmMask)) return null;
-            var maskWidth = bmMask.bmWidth;
-            var maskHeight = bmMask.bmHeight;
-            if (maskWidth <= 0 || maskHeight <= 0) return null;
-
-            var shape = new CursorShape { HotspotX = ii.xHotspot, HotspotY = ii.yHotspot };
-
-            if (ii.hbmColor != IntPtr.Zero)
-            {
-                if (!GetObject(ii.hbmColor, Marshal.SizeOf<BITMAP>(), out var bmColor)) return null;
-                var w = bmColor.bmWidth > 0 ? bmColor.bmWidth : maskWidth;
-                var h = bmColor.bmHeight > 0 ? bmColor.bmHeight : maskHeight;
-                var pixels = new byte[w * h * 4];
-                if (!ReadBits(hdc, ii.hbmColor, w, h, pixels)) return null;
-
-                var hasAlpha = false;
-                for (var i = 3; i < pixels.Length; i += 4)
-                    if (pixels[i] != 0) { hasAlpha = true; break; }
-                if (!hasAlpha)
-                    for (var i = 3; i < pixels.Length; i += 4) pixels[i] = 255; // 旧式光标无 alpha
-
-                shape.Width = w;
-                shape.Height = h;
-                shape.Pixels = pixels;
-                return shape;
-            }
-
-            // 单色光标：掩码位图为 AND（上半）+ XOR（下半）
-            if (maskHeight % 2 != 0) return null;
-            var mono = new byte[maskWidth * maskHeight * 4];
-            if (!ReadBits(hdc, ii.hbmMask, maskWidth, maskHeight, mono)) return null;
-            shape.Width = maskWidth;
-            shape.Height = maskHeight / 2;
-            shape.Mono = true;
-            shape.Pixels = mono;
-            return shape;
-        }
-        finally
-        {
-            if (ii.hbmColor != IntPtr.Zero) DeleteObject(ii.hbmColor);
-            if (ii.hbmMask != IntPtr.Zero) DeleteObject(ii.hbmMask);
-            if (hdc != IntPtr.Zero) ReleaseDC(IntPtr.Zero, hdc);
-        }
-    }
-
-    private static bool ReadBits(IntPtr hdc, IntPtr hbm, int w, int h, byte[] dst)
-    {
-        var bi = new BITMAPINFO
-        {
-            bmiHeader = new BITMAPINFOHEADER
-            {
-                biSize = Marshal.SizeOf<BITMAPINFOHEADER>(),
-                biWidth = w,
-                biHeight = -h, // 负数表示自上而下，与屏幕坐标一致
-                biPlanes = 1,
-                biBitCount = 32,
-                biCompression = 0,
-                biSizeImage = w * h * 4,
-            },
-            bmiColors = new RGBQUAD[1],
-        };
-        return GetDIBits(hdc, hbm, 0, (uint)h, dst, ref bi, 0) != 0;
     }
 }

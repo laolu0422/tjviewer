@@ -15,13 +15,15 @@ public class SignalHub
     private readonly ConnectionManager _cm;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly TokenService _tokens;
+    private readonly DeviceCodeRegistry _codes;
     private readonly ILogger<SignalHub> _log;
 
-    public SignalHub(ConnectionManager cm, IServiceScopeFactory scopeFactory, TokenService tokens, ILogger<SignalHub> log)
+    public SignalHub(ConnectionManager cm, IServiceScopeFactory scopeFactory, TokenService tokens, DeviceCodeRegistry codes, ILogger<SignalHub> log)
     {
         _cm = cm;
         _scopeFactory = scopeFactory;
         _tokens = tokens;
+        _codes = codes;
         _log = log;
     }
 
@@ -112,6 +114,9 @@ public class SignalHub
             case SignalTypes.RelaySwitch:
                 await OnRelaySwitch(deviceId, SignalJson.Parse<RelaySwitchPayload>(msg), ct);
                 break;
+            case SignalTypes.CodeConnect:
+                await OnCodeConnect(deviceId, SignalJson.Parse<CodeConnectPayload>(msg), ct);
+                break;
             case SignalTypes.SessionEnd:
                 await OnSessionEnd(deviceId, SignalJson.Parse<SessionEndPayload>(msg), ct);
                 break;
@@ -144,7 +149,7 @@ public class SignalHub
         await db.SaveChangesAsync(ct);
 
         await _cm.SendToAsync(p.TargetDeviceId, SignalJson.Create(SignalTypes.ConnectIncoming,
-            new ConnectIncomingPayload(session.Id, deviceId, deviceName, p.Capabilities)), ct);
+            new ConnectIncomingPayload(session.Id, deviceId, deviceName, p.Capabilities, SameAccount: true, Mode: "control")), ct);
     }
 
     private async Task OnConnectAccept(string deviceId, ConnectAcceptPayload? p, CancellationToken ct)
@@ -163,11 +168,65 @@ public class SignalHub
             if (dev is not null) { hostName = dev.Name; dev.Status = DeviceStatus.Controlled; await db.SaveChangesAsync(ct); }
         }
         await _cm.SendToAsync(s.ControllerDeviceId, SignalJson.Create(SignalTypes.ConnectReady,
-            new ConnectReadyPayload(s.Id, s.HostDeviceId, hostName, s.Capabilities)), ct);
+            new ConnectReadyPayload(s.Id, s.HostDeviceId, hostName, s.Capabilities, s.Mode)), ct);
+
+        // 连接码连接成功：立即轮换该模式验证码并推送被控端刷新
+        if (s.CodeBased)
+        {
+            var updated = _codes.Rotate(s.HostDeviceId, s.Mode);
+            if (updated is not null)
+                await _cm.SendToAsync(s.HostDeviceId, SignalJson.Create(SignalTypes.CodesUpdated, new CodesUpdatedPayload(updated)), ct);
+        }
+        await BroadcastPresenceAsync(s.UserId, s.HostDeviceId, DeviceStatus.Controlled, ct);
     }
 
-    private async Task OnConnectReject(string deviceId, ConnectRejectPayload? p, CancellationToken ct)
+    /// <summary>陌生设备凭连接码+验证码发起会话（观看/控制两种能力）。</summary>
+    private async Task OnCodeConnect(string deviceId, CodeConnectPayload? p, CancellationToken ct)
     {
+        if (p is null) return;
+        var mode = p.Mode == "watch" ? "watch" : "control";
+        if (!_codes.TryConsume(p.Code, p.Password, out var hostDeviceId, out var codeMode, out var error))
+        {
+            await Fail(deviceId, null, error, ct);
+            return;
+        }
+        if (codeMode != mode)
+        {
+            await Fail(deviceId, null, "该连接码不支持所选模式", ct);
+            return;
+        }
+
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var host = await db.Devices.FirstOrDefaultAsync(d => d.Id == hostDeviceId, ct);
+        var controller = await db.Devices.FirstOrDefaultAsync(d => d.Id == deviceId, ct);
+        if (host is null || controller is null) { await Fail(deviceId, null, "设备不存在", ct); return; }
+        if (host.Status == DeviceStatus.Offline || _cm.Get(hostDeviceId) is null)
+        {
+            await Fail(deviceId, null, "被控设备离线", ct);
+            return;
+        }
+
+        var caps = mode == "watch" ? Capabilities.View | Capabilities.AudioListen : Capabilities.All;
+        var session = new ConnectionManager.Session(Guid.NewGuid().ToString("N"), host.OwnerId, deviceId, hostDeviceId, caps,
+            SessionState.PendingAuth, CodeBased: true, Mode: mode);
+        _cm.AddSession(session);
+        db.Sessions.Add(new SessionRecord
+        {
+            Id = session.Id,
+            ControllerDeviceId = deviceId,
+            HostDeviceId = hostDeviceId,
+            State = SessionState.PendingAuth,
+            Capabilities = caps,
+        });
+        await db.SaveChangesAsync(ct);
+
+        var sameAccount = host.OwnerId == controller.OwnerId;
+        await _cm.SendToAsync(hostDeviceId, SignalJson.Create(SignalTypes.ConnectIncoming,
+            new ConnectIncomingPayload(session.Id, deviceId, controller.Name, caps, sameAccount, mode)), ct);
+    }
+
+    private async Task OnConnectReject(string deviceId, ConnectRejectPayload? p, CancellationToken ct)    {
         if (p is null) return;
         var s = _cm.GetSession(p.SessionId);
         if (s is null || s.HostDeviceId != deviceId) return;
@@ -224,6 +283,8 @@ public class SignalHub
             await UpdateSessionRecord(s.Id, SessionState.Ended, CancellationToken.None);
             var other = deviceId == s.ControllerDeviceId ? s.HostDeviceId : s.ControllerDeviceId;
             await _cm.SendToAsync(other, SignalJson.Create(SignalTypes.SessionEnd, new SessionEndPayload(s.Id, reason)), CancellationToken.None);
+            // 控制端退出时把被控端状态恢复为在线，避免界面一直停留在“被控中”
+            if (s.HostDeviceId != deviceId) await ResetHostStatus(s.HostDeviceId, CancellationToken.None);
         }
     }
 
@@ -236,6 +297,7 @@ public class SignalHub
         {
             dev.Status = DeviceStatus.Online;
             await db.SaveChangesAsync(ct);
+            await BroadcastPresenceAsync(dev.OwnerId, hostDeviceId, DeviceStatus.Online, ct);
         }
     }
 

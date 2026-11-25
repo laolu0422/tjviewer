@@ -27,8 +27,8 @@ public sealed record InputEvent(
 /// <summary>视频协商信息（被控端→控制端）。</summary>
 public sealed record VideoInfo(int Width, int Height, int Fps);
 
-/// <summary>画质请求（控制端→被控端，见 PRD FR-05/M3）。Mode: adaptive/manual；manual 时 Tier 与 Fps 独立生效，Fps=0 表示用档位默认帧率。</summary>
-public sealed record QualityRequest(string Mode, int Tier = 1, int Fps = 0);
+/// <summary>画质请求（控制端→被控端，见 PRD FR-05/M3）。Mode: adaptive/manual；manual 时 Tier/Fps/BitrateKbps 独立生效，0 表示用默认值。</summary>
+public sealed record QualityRequest(string Mode, int Tier = 1, int Fps = 0, int BitrateKbps = 0);
 
 /// <summary>文件传输子类型（见 PRD FR-08/M6）。</summary>
 public static class FileMsgType

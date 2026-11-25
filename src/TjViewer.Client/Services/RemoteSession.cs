@@ -23,6 +23,8 @@ public sealed class RemoteSession : IAsyncDisposable
     private readonly AppSession _app;
     private readonly string _sessionId;
     private readonly bool _isController;
+    private readonly string _mode;
+    private readonly Capabilities _caps;
     private readonly string? _ffmpeg;
     private readonly CancellationTokenSource _cts = new();
     private IMessageChannel? _channel;
@@ -44,21 +46,28 @@ public sealed class RemoteSession : IAsyncDisposable
     public event Action<byte[]>? FrameDecoded;
     public event Action<string>? Status;
     public event Action? ChannelReady;
+    public event Action? Ended;
     public event Action<ConnectionPath>? PathChanged;
     public event Action<string, double>? FileProgress;
     public event Action<string, string>? FileCompleted;
     public event Action<string, string>? FileFailed;
 
     public bool IsController => _isController;
+    /// <summary>控制模式：control（可操控）/ watch（仅观看）。</summary>
+    public string Mode => _mode;
+    public bool CanControl => _isController && _caps.HasFlag(Capabilities.Control);
     public ConnectionPath Path => _path;
     public VideoInfo? VideoInfo => _ctrlReceiver?.Info;
 
-    public RemoteSession(SignalClient signal, AppSession app, string sessionId, bool isController)
+    public RemoteSession(SignalClient signal, AppSession app, string sessionId, bool isController, string mode = "control",
+        Capabilities caps = Capabilities.All)
     {
         _signal = signal;
         _app = app;
         _sessionId = sessionId;
         _isController = isController;
+        _mode = string.IsNullOrEmpty(mode) ? "control" : mode;
+        _caps = caps;
         _ffmpeg = FFmpegLocator.Find();
         _onPeer = OnPeerSignal;
         _onRelaySwitch = p => { if (p.SessionId == _sessionId) _ = SwitchToRelayAsync("对端请求中转"); };
@@ -194,11 +203,14 @@ public sealed class RemoteSession : IAsyncDisposable
         // 文件接收（保存到 下载/TjViewer，见 PRD FR-08）
         try
         {
-            var saveDir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "TjViewer");
-            _fileReceiver = new FileReceiver(channel, saveDir);
-            _fileReceiver.Progress += (n, p) => FileProgress?.Invoke(n, p);
-            _fileReceiver.Completed += (n, path2) => FileCompleted?.Invoke(n, path2);
-            _fileReceiver.Failed += (n, r) => FileFailed?.Invoke(n, r);
+            if (_caps.HasFlag(Capabilities.File))
+            {
+                var saveDir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "TjViewer");
+                _fileReceiver = new FileReceiver(channel, saveDir);
+                _fileReceiver.Progress += (n, p) => FileProgress?.Invoke(n, p);
+                _fileReceiver.Completed += (n, path2) => FileCompleted?.Invoke(n, path2);
+                _fileReceiver.Failed += (n, r) => FileFailed?.Invoke(n, r);
+            }
         }
         catch { }
 
@@ -223,10 +235,13 @@ public sealed class RemoteSession : IAsyncDisposable
     public Task SendFileAsync(string path)
         => _channel is null ? Task.CompletedTask : FileSender.SendFileAsync(path, _channel);
 
+    /// <summary>服务端通知会话结束（对端退出/离线），用于控制窗口自动关闭。</summary>
+    public void NotifyEnded() => Ended?.Invoke();
+
     /// <summary>控制端开启麦克风回传（须用户主动同意，见 PRD §5.5）。</summary>
     public void StartMic()
     {
-        if (!_isController || _channel is null || _micSender is not null) return;
+        if (!_isController || !_caps.HasFlag(Capabilities.MicSend) || _channel is null || _micSender is not null) return;
         try { _micSender = new AudioSender(_channel, 1, loopback: false); }
         catch { Status?.Invoke("麦克风不可用"); }
     }
@@ -251,20 +266,35 @@ public sealed class RemoteSession : IAsyncDisposable
             var q = JsonSerializer.Deserialize<QualityRequest>(payload, SignalJson.Options);
             if (q is null) return;
             if (q.Mode == "adaptive") _hostSender.SetAdaptive();
-            else _hostSender.SetManual(q.Tier, q.Fps);
+            else _hostSender.SetManual(q.Tier, q.Fps, q.BitrateKbps);
         }
     }
 
     private void ApplyInput(InputEvent ev)
     {
+        if (!_caps.HasFlag(Capabilities.Control)) return; // 观看模式忽略输入
         switch (ev.Kind)
         {
-            case "move": InputInjector.MoveMouseAbsolute(ev.X, ev.Y, _hostW, _hostH); break;
+            case "move":
+                {
+                    var (x, y) = MapToNative(ev.X, ev.Y);
+                    InputInjector.MoveMouseAbsolute(x, y, _hostW, _hostH);
+                    break;
+                }
             case "button": InputInjector.MouseButtonEvent((MouseButton)ev.Button, ev.Down); break;
             case "wheel": InputInjector.Wheel(ev.Delta); break;
             case "key": InputInjector.ScanCode(ev.Scan, ev.Down, ev.Extended); break;
             case "text": if (ev.Text is not null) InputInjector.Text(ev.Text); break;
         }
+    }
+
+    /// <summary>视频可能因 4K 上限被缩放，点击坐标需换算回被控端原生像素。</summary>
+    private (int X, int Y) MapToNative(int x, int y)
+    {
+        int vw = _hostSender?.OutputWidth ?? 0, vh = _hostSender?.OutputHeight ?? 0;
+        if (vw > 0 && vh > 0 && (vw != _hostW || vh != _hostH))
+            return ((int)((long)x * _hostW / vw), (int)((long)y * _hostH / vh));
+        return (x, y);
     }
 
     public void SendInput(InputEvent ev)
@@ -284,6 +314,8 @@ public sealed class RemoteSession : IAsyncDisposable
         _signal.PeerSignal -= _onPeer;
         _signal.RelaySwitch -= _onRelaySwitch;
         _cts.Cancel();
+        // 主动通知服务端结束会话，避免对端长期停留在“被控中”
+        try { await _signal.EndSession(_sessionId, "客户端断开"); } catch { }
         await TeardownMediaAsync();
         if (_relay is not null) await _relay.DisposeAsync();
         if (_kcp is not null) await _kcp.DisposeAsync();

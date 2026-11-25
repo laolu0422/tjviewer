@@ -40,6 +40,32 @@ public class AppSession
         Username = Settings.Username;
     }
 
+    public string? SavedPassword => SecretStore.Unprotect(Settings.ProtectedPassword);
+
+    public void SaveCredentials(string account, string password, bool remember, bool autoLogin)
+    {
+        if (!remember)
+        {
+            ClearCredentials();
+            return;
+        }
+        Settings.SavedAccount = account;
+        Settings.ProtectedPassword = SecretStore.Protect(password);
+        Settings.RememberCredentials = true;
+        Settings.AutoLogin = autoLogin;
+        SecretStore.Save(Settings);
+    }
+
+    /// <summary>退出登录：清除本地保存的账号密码与自动登录开关。</summary>
+    public void ClearCredentials()
+    {
+        Settings.SavedAccount = null;
+        Settings.ProtectedPassword = null;
+        Settings.RememberCredentials = false;
+        Settings.AutoLogin = false;
+        SecretStore.Save(Settings);
+    }
+
     public void Clear()
     {
         AccessToken = null;

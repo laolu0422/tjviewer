@@ -6,8 +6,9 @@ using TjViewer.Shared;
 namespace TjViewer.Core.Video;
 
 /// <summary>
-/// 被控端视频发送：采集 → H.264 编码 → KCP 通道（见 PRD FR-05 / M2 / M3）。
-/// 自适应：按发送队列拥塞升降档（降快升慢）；手动：固定档位。分辨率保持原生，调节帧率/码率。
+/// 被控端视频发送：采集 → H.264 编码 → 通道。
+/// 手动模式帧率/码率独立可调（受服务端 4K/120fps/10Mbps 限制）；
+/// 无论画面是否变化都按设定帧率持续推流，保证操作反馈及时。
 /// </summary>
 public sealed class HostVideoSender : IAsyncDisposable
 {
@@ -19,14 +20,22 @@ public sealed class HostVideoSender : IAsyncDisposable
     private VideoEncoder? _encoder;
     private int _tierIndex;
     private int _fps;
+    private int _bitrateKbps;
+    private int _outWidth;
+    private int _outHeight;
     private bool _adaptive = true;
     private int _stableCount;
     private readonly Task _loop;
 
+    /// <summary>采集到的原始桌面尺寸。</summary>
     public int Width => _capturer.Width;
     public int Height => _capturer.Height;
+    /// <summary>实际编码输出尺寸（超过 4K 时按比例缩小）。</summary>
+    public int OutputWidth => _outWidth;
+    public int OutputHeight => _outHeight;
     public int CurrentTier => _tierIndex;
     public int CurrentFps => _fps;
+    public int CurrentBitrateKbps => _bitrateKbps;
     public bool IsAdaptive => _adaptive;
 
     public HostVideoSender(IMessageChannel channel, string ffmpeg, int initialTier = 1)
@@ -35,15 +44,13 @@ public sealed class HostVideoSender : IAsyncDisposable
         _ffmpeg = ffmpeg;
         _capturer = CreateCapturer();
         _tierIndex = Math.Clamp(initialTier, 0, QualityProfiles.Tiers.Length - 1);
-        _fps = QualityProfiles.Tiers[_tierIndex].MaxFps;
+        _fps = VideoLimits.ClampFps(QualityProfiles.Tiers[_tierIndex].MaxFps);
+        _bitrateKbps = VideoLimits.ClampBitrate(QualityProfiles.Tiers[_tierIndex].MaxBitrateKbps);
         CreateEncoder();
-        var tier = QualityProfiles.Tiers[_tierIndex];
-        var info = JsonSerializer.SerializeToUtf8Bytes(new VideoInfo(_capturer.Width, _capturer.Height, tier.MaxFps), SignalJson.Options);
-        _channel.Send(ChannelMux.Wrap(ChannelMsgType.Control, info));
         _loop = Task.Run(CaptureLoop);
     }
 
-    /// <summary>优先 DXGI Desktop Duplication（低延迟、自带光标合成），不可用时回退 GDI。</summary>
+    /// <summary>优先 DXGI Desktop Duplication，不可用时回退 GDI。</summary>
     private static IDesktopCapturer CreateCapturer()
     {
         try { return new DxgiCapturer(); }
@@ -59,16 +66,29 @@ public sealed class HostVideoSender : IAsyncDisposable
         lock (_encLock)
         {
             if (_encoder is not null) { try { _encoder.DisposeAsync().AsTask().Wait(); } catch { } }
-            var tier = QualityProfiles.Tiers[_tierIndex];
-            _encoder = new VideoEncoder(_ffmpeg, _capturer.Width, _capturer.Height, _fps, tier.MaxBitrateKbps);
+            var (ow, oh) = VideoLimits.ClampSize(_capturer.Width, _capturer.Height);
+            _outWidth = ow;
+            _outHeight = oh;
+            _fps = VideoLimits.ClampFps(_fps);
+            _bitrateKbps = VideoLimits.ClampBitrate(_bitrateKbps);
+            _encoder = new VideoEncoder(_ffmpeg, _capturer.Width, _capturer.Height, _fps, _bitrateKbps, null, ow, oh);
             _encoder.EncodedChunk += data => _channel.Send(ChannelMux.Wrap(ChannelMsgType.Video, data));
+            SendVideoInfo();
         }
+    }
+
+    /// <summary>周期性重发视频协商信息，避免对端晚加入时错过首包。</summary>
+    private void SendVideoInfo()
+    {
+        var info = JsonSerializer.SerializeToUtf8Bytes(new VideoInfo(_outWidth, _outHeight, _fps), SignalJson.Options);
+        _channel.Send(ChannelMux.Wrap(ChannelMsgType.Control, info));
     }
 
     private async Task CaptureLoop()
     {
         var frameWatch = System.Diagnostics.Stopwatch.StartNew();
         var adaptWatch = System.Diagnostics.Stopwatch.StartNew();
+        var infoWatch = System.Diagnostics.Stopwatch.StartNew();
         long backlogStartMs = -1, lastUpgradeMs = 0;
         while (!_cts.IsCancellationRequested)
         {
@@ -82,6 +102,11 @@ public sealed class HostVideoSender : IAsyncDisposable
                     if (_encoder is null || _encoder.Width != _capturer.Width || _encoder.Height != _capturer.Height) CreateEncoder();
                     if (_encoder is not null) { try { _encoder.EncodeFrameAsync(frame).Wait(); } catch { } }
                 }
+            }
+            if (infoWatch.ElapsedMilliseconds >= 1000)
+            {
+                infoWatch.Restart();
+                lock (_encLock) SendVideoInfo();
             }
             // DXGI 不会自动限帧，按当前帧率补齐间隔；GDI 采集后同样节流
             var budget = Math.Max(1, 1000 / fps);
@@ -102,7 +127,8 @@ public sealed class HostVideoSender : IAsyncDisposable
                 if (now - backlogStartMs >= 1000 && _tierIndex < QualityProfiles.Tiers.Length - 1)
                 {
                     _tierIndex++;
-                    _fps = QualityProfiles.Tiers[_tierIndex].MaxFps;
+                    _fps = VideoLimits.ClampFps(QualityProfiles.Tiers[_tierIndex].MaxFps);
+                    _bitrateKbps = VideoLimits.ClampBitrate(QualityProfiles.Tiers[_tierIndex].MaxBitrateKbps);
                     CreateEncoder();
                     backlogStartMs = now;
                     _stableCount = 0;
@@ -122,7 +148,8 @@ public sealed class HostVideoSender : IAsyncDisposable
                         if (_stableCount >= 3 && _tierIndex > 0)
                         {
                             _tierIndex--;
-                            _fps = QualityProfiles.Tiers[_tierIndex].MaxFps;
+                            _fps = VideoLimits.ClampFps(QualityProfiles.Tiers[_tierIndex].MaxFps);
+                            _bitrateKbps = VideoLimits.ClampBitrate(QualityProfiles.Tiers[_tierIndex].MaxBitrateKbps);
                             CreateEncoder();
                             _stableCount = 0;
                         }
@@ -133,16 +160,23 @@ public sealed class HostVideoSender : IAsyncDisposable
         }
     }
 
-    /// <summary>手动固定：画质档位与帧率独立设置（见 PRD FR-05 手动模式）。fps&lt;=0 时用档位默认帧率。</summary>
-    public void SetManual(int tier, int fps)
+    /// <summary>手动固定：帧率与码率独立设置，统一按服务端上限钳制。</summary>
+    public void SetManual(int tier, int fps, int bitrateKbps)
     {
         _adaptive = false;
         _tierIndex = Math.Clamp(tier, 0, QualityProfiles.Tiers.Length - 1);
-        _fps = fps > 0 ? Math.Clamp(fps, 5, 60) : QualityProfiles.Tiers[_tierIndex].MaxFps;
+        _fps = VideoLimits.ClampFps(fps);
+        _bitrateKbps = VideoLimits.ClampBitrate(bitrateKbps);
         CreateEncoder();
     }
 
-    public void SetAdaptive() => _adaptive = true;
+    public void SetAdaptive()
+    {
+        _adaptive = true;
+        _fps = VideoLimits.ClampFps(QualityProfiles.Tiers[_tierIndex].MaxFps);
+        _bitrateKbps = VideoLimits.ClampBitrate(QualityProfiles.Tiers[_tierIndex].MaxBitrateKbps);
+        CreateEncoder();
+    }
 
     public async ValueTask DisposeAsync()
     {

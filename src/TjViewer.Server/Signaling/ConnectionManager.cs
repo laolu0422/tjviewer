@@ -9,7 +9,8 @@ namespace TjViewer.Server.Signaling;
 public class ConnectionManager
 {
     public sealed record Conn(string UserId, string DeviceId, WebSocket Socket);
-    public sealed record Session(string Id, string UserId, string ControllerDeviceId, string HostDeviceId, Capabilities Capabilities, SessionState State);
+    public sealed record Session(string Id, string UserId, string ControllerDeviceId, string HostDeviceId, Capabilities Capabilities, SessionState State,
+        bool CodeBased = false, string Mode = "control");
 
     private readonly ConcurrentDictionary<string, Conn> _byDevice = new();
     private readonly ConcurrentDictionary<string, Session> _sessions = new();

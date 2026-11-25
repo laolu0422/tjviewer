@@ -10,6 +10,7 @@
     <LangVersion>latest</LangVersion>
     <RootNamespace>TjViewer.Client</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>..\..\assets\tjv.ico</ApplicationIcon>
     <AssemblyName>TjViewer</AssemblyName>
     <NoWarn>WFO0003</NoWarn>
   </PropertyGroup>

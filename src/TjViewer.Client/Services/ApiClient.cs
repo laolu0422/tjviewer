@@ -63,4 +63,6 @@ public class ApiClient
     public Task<DeviceDto> UpdateDevice(string id, UpdateDeviceRequest r) => Send<DeviceDto>(HttpMethod.Patch, $"{ApiRoutes.Devices.TrimStart('/')}/{id}", r, true);
     public Task<ApiMessage> DeleteDevice(string id) => Send<ApiMessage>(HttpMethod.Delete, $"{ApiRoutes.Devices.TrimStart('/')}/{id}", null, true);
     public Task<ApiMessage> Heartbeat(string deviceId) => Send<ApiMessage>(HttpMethod.Post, $"{ApiRoutes.Devices.TrimStart('/')}/heartbeat", new HeartbeatRequest(deviceId), true);
+    public Task<DeviceCodes> GetCodes(string deviceId, bool fixedCode)
+        => Send<DeviceCodes>(HttpMethod.Post, ApiRoutes.Codes.TrimStart('/'), new CodesRequest(deviceId, fixedCode), true);
 }

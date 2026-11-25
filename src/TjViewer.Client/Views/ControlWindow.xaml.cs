@@ -1,66 +1,112 @@
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using TjViewer.Client.Services;
 using TjViewer.Core.Input;
 using TjViewer.Shared;
 
 namespace TjViewer.Client.Views;
 
-/// <summary>远程控制窗口（见 PRD FR-05/06）：渲染被控端画面，回传键鼠输入。</summary>
+/// <summary>远程控制窗口：渲染被控端画面，回传键鼠输入；观看模式只读。</summary>
 public partial class ControlWindow : Window
 {
     private readonly RemoteSession _session;
+    private readonly DispatcherTimer _qualityTimer;
+    private KeyboardHook? _hook;
     private WriteableBitmap? _bmp;
     private bool _updatingUi;
     private Point _lastMove = new(-1, -1);
+    private int _renderPending;
+    private byte[]? _latestFrame;
 
     public ControlWindow(RemoteSession session)
     {
         InitializeComponent();
         _session = session;
-        Title = "TjViewer - 远程控制";
+        Title = session.CanControl ? "TjViewer - 远程控制" : "TjViewer - 远程观看";
+
         _session.FrameDecoded += OnFrame;
         _session.Status += s => Dispatcher.BeginInvoke(() => StatusText.Text = s);
         _session.PathChanged += p => Dispatcher.BeginInvoke(() => PathText.Text = p == ConnectionPath.P2P ? "P2P 直连" : "服务器中转");
+        _session.Ended += () => Dispatcher.BeginInvoke(Close);
         _session.FileCompleted += (n, path) => Dispatcher.BeginInvoke(() => MessageBox.Show(this, $"已接收：{n}\n{path}", "文件传输"));
         _session.FileFailed += (n, r) => Dispatcher.BeginInvoke(() => MessageBox.Show(this, $"接收失败：{n}（{r}）", "文件传输"));
         _session.FileProgress += (n, p) => Dispatcher.BeginInvoke(() => StatusText.Text = $"接收 {n}：{p:P0}");
+
+        _qualityTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(140) };
+        _qualityTimer.Tick += (_, _) => { _qualityTimer.Stop(); SendManualQuality(); };
+
+        _updatingUi = true;
+        FpsSlider.Value = 1;      // 30 FPS
+        BitrateSlider.Value = 2;  // 6 Mbps
+        _updatingUi = false;
+        UpdateQualityLabels();
+
+        if (!session.CanControl)
+        {
+            ModeBadge.Visibility = Visibility.Visible;
+            MicBtn.IsEnabled = false;
+            MicBtn.Visibility = Visibility.Collapsed;
+            FileBtn.Visibility = Visibility.Collapsed;
+            FooterText.Visibility = Visibility.Collapsed;
+        }
+
+        Loaded += (_, _) => VideoImage.Focus();
         Closed += async (_, _) =>
         {
+            _hook?.Dispose();
+            _hook = null;
             _session.FrameDecoded -= OnFrame;
             await _session.DisposeAsync();
         };
-        VideoImage.Focusable = true;
-        _updatingUi = true;
-        QualityBox.SelectedIndex = 1;
-        FpsBox.SelectedIndex = 1;
-        QualityBox.IsEnabled = false; // 初始为自适应模式
-        FpsBox.IsEnabled = false;
-        _updatingUi = false;
-        Loaded += (_, _) => VideoImage.Focus();
     }
 
-    private void OnQualityChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        var hwnd = new WindowInteropHelper(this).Handle;
+        _hook = new KeyboardHook(hwnd);
+        _hook.Key += OnGlobalKey;
+        Activated += (_, _) => _hook?.Install();
+        Deactivated += (_, _) => _hook?.Uninstall();
+        if (IsActive) _hook.Install();
+    }
+
+    /// <summary>远程窗口前台时接管键盘（含 Alt+Tab、Win 组合），转发到被控端。</summary>
+    private void OnGlobalKey(ushort scan, bool down, bool extended)
+    {
+        if (!_session.CanControl) return;
+        _session.SendInput(new InputEvent("key", Scan: scan, Down: down, Extended: extended));
+    }
+
+    private void UpdateQualityLabels()
+    {
+        int fi = (int)Math.Round(FpsSlider.Value);
+        int bi = (int)Math.Round(BitrateSlider.Value);
+        fi = Math.Clamp(fi, 0, QualityProfiles.FpsOptions.Length - 1);
+        bi = Math.Clamp(bi, 0, QualityProfiles.BitrateOptions.Length - 1);
+        FpsText.Text = $"{QualityProfiles.FpsOptions[fi]} FPS";
+        BitrateText.Text = $"{QualityProfiles.BitrateOptions[bi] / 1024} Mbps";
+    }
+
+    private void OnQualitySliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (_updatingUi || _session is null) return;
-        if (AdaptiveBtn.IsChecked != true) SendManualQuality();
+        UpdateQualityLabels();
+        if (AdaptiveBtn.IsChecked == true) return;
+        _qualityTimer.Stop();
+        _qualityTimer.Start();
     }
 
-    private void OnFpsChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
-    {
-        if (_updatingUi || _session is null) return;
-        if (AdaptiveBtn.IsChecked != true) SendManualQuality();
-    }
-
-    /// <summary>手动模式：画质档位与帧率独立下发。</summary>
     private void SendManualQuality()
     {
-        int tier = Math.Max(0, QualityBox.SelectedIndex);
-        int fps = 0;
-        if (FpsBox.SelectedItem is System.Windows.Controls.ComboBoxItem ci && int.TryParse(ci.Content?.ToString(), out var f)) fps = f;
-        _session.SendQuality(new QualityRequest("manual", tier, fps));
+        int fi = Math.Clamp((int)Math.Round(FpsSlider.Value), 0, QualityProfiles.FpsOptions.Length - 1);
+        int bi = Math.Clamp((int)Math.Round(BitrateSlider.Value), 0, QualityProfiles.BitrateOptions.Length - 1);
+        _session.SendQuality(new QualityRequest("manual", 0, QualityProfiles.FpsOptions[fi], QualityProfiles.BitrateOptions[bi]));
     }
 
     private void OnAdaptiveChecked(object sender, RoutedEventArgs e)
@@ -68,8 +114,8 @@ public partial class ControlWindow : Window
         if (_updatingUi || _session is null) return;
         _updatingUi = true;
         LockBtn.IsChecked = false;
-        QualityBox.IsEnabled = false;
-        FpsBox.IsEnabled = false;
+        FpsSlider.IsEnabled = false;
+        BitrateSlider.IsEnabled = false;
         _updatingUi = false;
         _session.SendQuality(new QualityRequest("adaptive"));
     }
@@ -79,20 +125,19 @@ public partial class ControlWindow : Window
         if (_updatingUi || _session is null) return;
         _updatingUi = true;
         bool locked = LockBtn.IsChecked == true;
-        QualityBox.IsEnabled = !locked;
-        FpsBox.IsEnabled = !locked;
+        FpsSlider.IsEnabled = !locked;
+        BitrateSlider.IsEnabled = !locked;
         _updatingUi = false;
         if (!locked) SendManualQuality();
     }
 
-    /// <summary>强制锁定：关闭自适应并固定当前画质与帧率。</summary>
     private void OnLockChecked(object sender, RoutedEventArgs e)
     {
         if (_updatingUi || _session is null) return;
         _updatingUi = true;
         AdaptiveBtn.IsChecked = false;
-        QualityBox.IsEnabled = false;
-        FpsBox.IsEnabled = false;
+        FpsSlider.IsEnabled = false;
+        BitrateSlider.IsEnabled = false;
         _updatingUi = false;
         SendManualQuality();
     }
@@ -101,8 +146,9 @@ public partial class ControlWindow : Window
     {
         if (_updatingUi || _session is null) return;
         _updatingUi = true;
-        QualityBox.IsEnabled = true;
-        FpsBox.IsEnabled = true;
+        bool adaptive = AdaptiveBtn.IsChecked == true;
+        FpsSlider.IsEnabled = !adaptive;
+        BitrateSlider.IsEnabled = !adaptive;
         _updatingUi = false;
     }
 
@@ -111,6 +157,7 @@ public partial class ControlWindow : Window
 
     private async void OnSendFile(object sender, RoutedEventArgs e)
     {
+        if (!_session.CanControl) return;
         var dlg = new Microsoft.Win32.OpenFileDialog { Title = "选择要发送的文件" };
         if (dlg.ShowDialog(this) == true)
         {
@@ -122,17 +169,27 @@ public partial class ControlWindow : Window
 
     private void OnFrame(byte[] bgra)
     {
+        _latestFrame = bgra;
+        // 渲染忙时丢帧，避免 120FPS 下 UI 线程积压
+        if (Interlocked.Exchange(ref _renderPending, 1) == 1) return;
         Dispatcher.BeginInvoke(() =>
         {
-            var info = _session.VideoInfo;
-            if (info is null) return;
-            int w = info.Width, h = info.Height;
-            if (bgra.Length < w * h * 4) return;
-            if (_bmp is null || _bmp.PixelWidth != w || _bmp.PixelHeight != h)
-                _bmp = new WriteableBitmap(w, h, 96, 96, PixelFormats.Bgra32, null);
-            _bmp.WritePixels(new Int32Rect(0, 0, w, h), bgra, w * 4, 0);
-            VideoImage.Source = _bmp;
+            Interlocked.Exchange(ref _renderPending, 0);
+            var frame = _latestFrame;
+            if (frame is not null) Render(frame);
         });
+    }
+
+    private void Render(byte[] bgra)
+    {
+        var info = _session.VideoInfo;
+        if (info is null) return;
+        int w = info.Width, h = info.Height;
+        if (bgra.Length < w * h * 4) return;
+        if (_bmp is null || _bmp.PixelWidth != w || _bmp.PixelHeight != h)
+            _bmp = new WriteableBitmap(w, h, 96, 96, PixelFormats.Bgra32, null);
+        _bmp.WritePixels(new Int32Rect(0, 0, w, h), bgra, w * 4, 0);
+        VideoImage.Source = _bmp;
     }
 
     private Point MapToHost(Point p)
@@ -150,6 +207,7 @@ public partial class ControlWindow : Window
 
     private void OnMouseMove(object sender, MouseEventArgs e)
     {
+        if (!_session.CanControl) return;
         var p = MapToHost(e.GetPosition(VideoImage));
         var ip = new Point((int)p.X, (int)p.Y);
         if (ip == _lastMove) return; // 合并重复坐标，减少输入消息量
@@ -159,6 +217,7 @@ public partial class ControlWindow : Window
 
     private void OnMouseDown(object sender, MouseButtonEventArgs e)
     {
+        if (!_session.CanControl) return;
         var p = MapToHost(e.GetPosition(VideoImage));
         _session.SendInput(new InputEvent("move", (int)p.X, (int)p.Y));
         _session.SendInput(new InputEvent("button", Button: Btn(e.ChangedButton), Down: true));
@@ -168,34 +227,16 @@ public partial class ControlWindow : Window
 
     private void OnMouseUp(object sender, MouseButtonEventArgs e)
     {
+        if (!_session.CanControl) return;
         _session.SendInput(new InputEvent("button", Button: Btn(e.ChangedButton), Down: false));
         if (VideoImage.IsMouseCaptured) VideoImage.ReleaseMouseCapture();
     }
 
     private void OnMouseWheel(object sender, MouseWheelEventArgs e)
-        => _session.SendInput(new InputEvent("wheel", Delta: e.Delta));
-
-    private void OnKeyDown(object sender, KeyEventArgs e)
     {
-        ushort vk = (ushort)KeyInterop.VirtualKeyFromKey(e.Key);
-        ushort scan = InputInjector.VirtualKeyToScanCode(vk);
-        if (scan == 0) return;
-        _session.SendInput(new InputEvent("key", Scan: scan, Down: true, Extended: IsExtended(e.Key)));
-        e.Handled = true;
+        if (!_session.CanControl) return;
+        _session.SendInput(new InputEvent("wheel", Delta: e.Delta));
     }
-
-    private void OnKeyUp(object sender, KeyEventArgs e)
-    {
-        ushort vk = (ushort)KeyInterop.VirtualKeyFromKey(e.Key);
-        ushort scan = InputInjector.VirtualKeyToScanCode(vk);
-        if (scan == 0) return;
-        _session.SendInput(new InputEvent("key", Scan: scan, Down: false, Extended: IsExtended(e.Key)));
-        e.Handled = true;
-    }
-
-    private static bool IsExtended(Key k) => k is Key.Up or Key.Down or Key.Left or Key.Right
-        or Key.Insert or Key.Delete or Key.Home or Key.End or Key.PageUp or Key.PageDown
-        or Key.RightCtrl or Key.RightAlt or Key.PrintScreen or Key.NumLock or Key.Divide;
 
     private static int Btn(System.Windows.Input.MouseButton b) => b switch
     {
@@ -205,9 +246,5 @@ public partial class ControlWindow : Window
         _ => 0,
     };
 
-    private async void OnDisconnect(object sender, RoutedEventArgs e)
-    {
-        await _session.DisposeAsync();
-        Close();
-    }
+    private void OnDisconnect(object sender, RoutedEventArgs e) => Close();
 }

@@ -207,12 +207,16 @@ public sealed class VideoEncoder : IAsyncDisposable
     public string EncoderName { get; }
     public event Action<byte[]>? EncodedChunk;
 
-    public VideoEncoder(string ffmpeg, int width, int height, int fps, int bitrateKbps, string? encoder = null)
+    public VideoEncoder(string ffmpeg, int width, int height, int fps, int bitrateKbps, string? encoder = null, int outputWidth = 0, int outputHeight = 0)
     {
         Width = width; Height = height; Fps = fps;
         EncoderName = string.IsNullOrWhiteSpace(encoder) ? HardwareCodecs.SelectEncoder(ffmpeg) : encoder.Trim();
+        // 超过服务端 4K 上限时由 ffmpeg 缩放输出
+        var scale = outputWidth > 0 && outputHeight > 0 && (outputWidth != width || outputHeight != height)
+            ? $"-vf scale={outputWidth}:{outputHeight}:flags=fast_bilinear "
+            : "";
         var args = $"-hide_banner -loglevel error -f rawvideo -pix_fmt bgra -video_size {width}x{height} -framerate {fps} -i pipe:0 " +
-                   $"-c:v {EncoderName} {HardwareCodecs.OptionsFor(EncoderName)} -b:v {bitrateKbps}k -maxrate {bitrateKbps}k -bufsize {bitrateKbps * 2}k -g {fps * 2} -bf 0 -pix_fmt {HardwareCodecs.PixFmtFor(EncoderName)} -flush_packets 1 -f h264 pipe:1";
+                   $"{scale}-c:v {EncoderName} {HardwareCodecs.OptionsFor(EncoderName)} -b:v {bitrateKbps}k -maxrate {bitrateKbps}k -bufsize {bitrateKbps * 2}k -g {fps * 2} -bf 0 -pix_fmt {HardwareCodecs.PixFmtFor(EncoderName)} -flush_packets 1 -f h264 pipe:1";
         _proc = ProcHelper.Start(ffmpeg, args);
         _readTask = Task.Run(ReadLoop);
     }

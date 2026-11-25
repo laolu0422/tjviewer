@@ -16,6 +16,8 @@ public partial class LoginViewModel : ObservableObject
     [ObservableProperty] private string resetEmail = "";
     [ObservableProperty] private string status = "";
     [ObservableProperty] private bool busy;
+    [ObservableProperty] private bool rememberCredentials;
+    [ObservableProperty] private bool autoLogin;
 
     public event Action? LoggedIn;
 
@@ -23,7 +25,24 @@ public partial class LoginViewModel : ObservableObject
     {
         _session = session;
         serverUrl = session.ServerUrl;
+        account = session.Settings.SavedAccount ?? "";
+        rememberCredentials = session.Settings.RememberCredentials;
+        autoLogin = session.Settings.AutoLogin;
         _api = new ApiClient(session);
+    }
+
+    partial void OnAutoLoginChanged(bool value)
+    {
+        if (value) RememberCredentials = true; // 自动登录必然要求记住账密
+    }
+
+    /// <summary>自动登录：仅在已保存密码时尝试。</summary>
+    public async Task TryAutoLoginAsync()
+    {
+        if (!AutoLogin) return;
+        var pwd = _session.SavedPassword;
+        if (string.IsNullOrEmpty(pwd) || string.IsNullOrWhiteSpace(Account)) return;
+        await LoginAsync(pwd);
     }
 
     private void ApplyServer()
@@ -43,6 +62,7 @@ public partial class LoginViewModel : ObservableObject
         {
             var auth = await _api.Login(new LoginRequest(Account.Trim(), password));
             _session.ApplyAuth(auth);
+            _session.SaveCredentials(Account.Trim(), password, RememberCredentials, AutoLogin);
             Status = "登录成功";
             LoggedIn?.Invoke();
         }
@@ -58,6 +78,8 @@ public partial class LoginViewModel : ObservableObject
         {
             var auth = await _api.Register(new RegisterRequest(RegUsername.Trim(), RegEmail.Trim(), password));
             _session.ApplyAuth(auth);
+            Account = RegUsername.Trim();
+            _session.SaveCredentials(Account, password, RememberCredentials, AutoLogin);
             Status = "注册成功";
             LoggedIn?.Invoke();
         }

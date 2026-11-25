@@ -10,6 +10,8 @@ public static class ApiRoutes
     public const string ResetConfirm = "/api/auth/reset-confirm";
     public const string ChangePassword = "/api/auth/change-password";
     public const string Devices = "/api/devices";
+    public const string Codes = "/api/codes";
+    public const string Limits = "/api/limits";
     public const string SignalHub = "/ws/signal";
     public const string RelayHub = "/ws/relay";
 }

@@ -101,10 +101,16 @@ public class RelayHub
                 } while (!r.EndOfMessage);
 
                 if (r.MessageType != WebSocketMessageType.Binary) continue;
+                var data = ms.ToArray();
+                if (IsQualityOverLimit(data))
+                {
+                    _log.LogWarning("拦截超限画质请求：会话 {Session} 设备 {Device}", hp.SessionId, hp.DeviceId);
+                    continue;
+                }
                 Peer? target;
                 lock (pair) { target = isController ? pair.Host : pair.Controller; }
                 if (target is not null)
-                    await SendBinaryAsync(target, ms.ToArray()); // 背压：对端发送慢时此处阻塞，经 TCP 传导至发送端
+                    await SendBinaryAsync(target, data); // 背压：对端发送慢时此处阻塞，经 TCP 传导至发送端
             }
         }
         catch (OperationCanceledException) { }
@@ -120,6 +126,19 @@ public class RelayHub
         if (left is not null) await SendTextAsync(left, RelayText.PeerLeft);
         await CloseAsync(ws);
         _log.LogInformation("中转离开：会话 {Session} 设备 {Device}", hp.SessionId, hp.DeviceId);
+    }
+
+    /// <summary>服务端硬限制：中继路径上拦截超过 4K/120fps/10Mbps 的画质请求。</summary>
+    private static bool IsQualityOverLimit(byte[] data)
+    {
+        if (data.Length < 3 || data[0] != ChannelMsgType.Quality) return false;
+        try
+        {
+            var q = JsonSerializer.Deserialize<QualityRequest>(data.AsSpan(1), SignalJson.Options);
+            if (q is null) return false;
+            return q.Fps > VideoLimits.MaxFps || q.BitrateKbps > VideoLimits.MaxBitrateKbps;
+        }
+        catch { return false; }
     }
 
     private static async Task SendBinaryAsync(Peer p, byte[] data)

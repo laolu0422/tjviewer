@@ -2,67 +2,140 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:sh="clr-namespace:TjViewer.Shared;assembly=TjViewer.Shared"
-        Title="TjViewer" Height="560" Width="720" MinWidth="560" MinHeight="420" WindowStartupLocation="CenterScreen"
+        xmlns:views="clr-namespace:TjViewer.Client.Views"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="TjViewer" Height="660" Width="920" MinWidth="760" MinHeight="560" WindowStartupLocation="CenterScreen"
+        WindowStyle="None" ResizeMode="CanResize"
         Background="{DynamicResource BgBrush}" Foreground="{DynamicResource TextBrush}" FontFamily="Segoe UI" FontSize="13">
-    <Grid Margin="20">
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="40" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False"/>
+    </shell:WindowChrome.WindowChrome>
+
+    <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
-        <Grid Grid.Row="0" Margin="0,0,0,14">
+
+        <views:TitleBar Grid.Row="0" Title="TjViewer"/>
+
+        <Grid Grid.Row="1" Margin="20,16,20,14">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="330"/>
             </Grid.ColumnDefinitions>
-            <StackPanel Grid.Column="0">
-                <TextBlock Text="我的设备" FontSize="20" FontWeight="Bold"/>
-                <TextBlock Text="选择设备开始远程控制" Style="{StaticResource SecondaryText}" Margin="0,2,0,0"/>
-            </StackPanel>
-            <Border Grid.Column="1" Background="{DynamicResource SurfaceAltBrush}" CornerRadius="14" Padding="12,5" VerticalAlignment="Center">
-                <TextBlock Style="{StaticResource SecondaryText}">
-                    <Run Text="当前用户："/><Run Text="{Binding CurrentUser, Mode=OneWay}" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
-                </TextBlock>
+
+            <!-- 左：我的设备 -->
+            <Grid Grid.Column="0" Margin="0,0,16,0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0" Margin="0,0,0,12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Text="我的设备" FontSize="19" FontWeight="Bold"/>
+                        <TextBlock Text="选择设备直接连接（同账号免确认）" Style="{StaticResource SecondaryText}" Margin="0,2,0,0"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Border Background="{DynamicResource SurfaceAltBrush}" CornerRadius="14" Padding="12,5" Margin="0,0,8,0">
+                            <TextBlock Style="{StaticResource SecondaryText}">
+                                <Run Text="当前用户："/><Run Text="{Binding CurrentUser, Mode=OneWay}" Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
+                            </TextBlock>
+                        </Border>
+                        <Button Content="退出登录" Style="{StaticResource DangerButton}" Click="OnLogout"/>
+                    </StackPanel>
+                </Grid>
+
+                <ListBox Grid.Row="1" x:Name="DeviceList" ItemsSource="{Binding Devices}">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Ellipse x:Name="Dot" Grid.Column="0" Width="9" Height="9" VerticalAlignment="Center" Margin="0,0,12,0"
+                                         Fill="{DynamicResource TextSecondaryBrush}"/>
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14"/>
+                                    <TextBlock Text="{Binding OsSummary}" Style="{StaticResource SecondaryText}" FontSize="12" Margin="0,2,0,0"/>
+                                </StackPanel>
+                                <TextBlock x:Name="StatusText" Grid.Column="2" Text="离线" Style="{StaticResource SecondaryText}" VerticalAlignment="Center"/>
+                            </Grid>
+                            <DataTemplate.Triggers>
+                                <DataTrigger Binding="{Binding Status}" Value="{x:Static sh:DeviceStatus.Online}">
+                                    <Setter TargetName="Dot" Property="Fill" Value="{DynamicResource SuccessBrush}"/>
+                                    <Setter TargetName="StatusText" Property="Text" Value="在线"/>
+                                    <Setter TargetName="StatusText" Property="Foreground" Value="{DynamicResource SuccessBrush}"/>
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding Status}" Value="{x:Static sh:DeviceStatus.Controlled}">
+                                    <Setter TargetName="Dot" Property="Fill" Value="{DynamicResource AccentBrush}"/>
+                                    <Setter TargetName="StatusText" Property="Text" Value="受控中"/>
+                                    <Setter TargetName="StatusText" Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+                                </DataTrigger>
+                            </DataTemplate.Triggers>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+
+                <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,12,0,0">
+                    <Button Content="连接选中设备" Style="{StaticResource PrimaryButton}" Click="OnConnect"/>
+                    <Button Content="刷新" Margin="8,0,0,0" Click="OnRefresh"/>
+                    <Button x:Name="AutoStartBtn" Content="开机自启：关" Margin="8,0,0,0" Click="OnAutoStart"/>
+                </StackPanel>
+
+                <TextBlock Grid.Row="3" Text="{Binding Status}" Style="{StaticResource SecondaryText}" Margin="0,10,0,0"/>
+            </Grid>
+
+            <!-- 右：陌生设备连接码 -->
+            <Border Grid.Column="1" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                    BorderThickness="1" CornerRadius="12" Padding="16,14">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <TextBlock Text="陌生设备连接" FontSize="16" FontWeight="Bold"/>
+                        <TextBlock Text="把连接码与验证码告知对方即可观看或控制本机；验证码使用后自动刷新。"
+                                   Style="{StaticResource SecondaryText}" FontSize="12" TextWrapping="Wrap" Margin="0,4,0,10"/>
+
+                        <Border Background="{DynamicResource SurfaceAltBrush}" CornerRadius="10" Padding="12">
+                            <StackPanel>
+                                <TextBlock Text="观看（只读）" FontWeight="SemiBold" FontSize="12" Foreground="{DynamicResource AccentBrush}"/>
+                                <TextBlock Text="连接码" Style="{StaticResource SecondaryText}" FontSize="11" Margin="0,6,0,0"/>
+                                <TextBox Text="{Binding WatchCode, Mode=OneWay}" IsReadOnly="True" Background="Transparent" BorderThickness="0"
+                                         Padding="0" FontFamily="Consolas" FontSize="19" Foreground="{DynamicResource AccentBrush}"/>
+                                <TextBlock Text="验证码" Style="{StaticResource SecondaryText}" FontSize="11" Margin="0,4,0,0"/>
+                                <TextBox Text="{Binding WatchPassword, Mode=OneWay}" IsReadOnly="True" Background="Transparent" BorderThickness="0"
+                                         Padding="0" FontFamily="Consolas" FontSize="16"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Background="{DynamicResource SurfaceAltBrush}" CornerRadius="10" Padding="12" Margin="0,8,0,0">
+                            <StackPanel>
+                                <TextBlock Text="远程控制" FontWeight="SemiBold" FontSize="12" Foreground="{DynamicResource AccentBrush}"/>
+                                <TextBlock Text="连接码" Style="{StaticResource SecondaryText}" FontSize="11" Margin="0,6,0,0"/>
+                                <TextBox Text="{Binding ControlCode, Mode=OneWay}" IsReadOnly="True" Background="Transparent" BorderThickness="0"
+                                         Padding="0" FontFamily="Consolas" FontSize="19" Foreground="{DynamicResource AccentBrush}"/>
+                                <TextBlock Text="验证码" Style="{StaticResource SecondaryText}" FontSize="11" Margin="0,4,0,0"/>
+                                <TextBox Text="{Binding ControlPassword, Mode=OneWay}" IsReadOnly="True" Background="Transparent" BorderThickness="0"
+                                         Padding="0" FontFamily="Consolas" FontSize="16"/>
+                            </StackPanel>
+                        </Border>
+
+                        <CheckBox x:Name="FixedCodeCheck" Content="使用固定连接码（重启后不变）" IsChecked="{Binding FixedCode}"
+                                  Margin="0,12,0,0" Click="OnFixedCode"/>
+
+                        <Button Content="输入连接码连接" Style="{StaticResource PrimaryButton}" Margin="0,14,0,0" Click="OnCodeConnect"/>
+                        <TextBlock Text="验证码不会保存在本机" Style="{StaticResource SecondaryText}" FontSize="11" Margin="0,8,0,0"/>
+                    </StackPanel>
+                </ScrollViewer>
             </Border>
         </Grid>
-        <ListBox Grid.Row="1" x:Name="DeviceList" ItemsSource="{Binding Devices}">
-            <ListBox.ItemTemplate>
-                <DataTemplate>
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <Ellipse x:Name="Dot" Grid.Column="0" Width="9" Height="9" VerticalAlignment="Center" Margin="0,0,12,0"
-                                 Fill="{DynamicResource TextSecondaryBrush}"/>
-                        <StackPanel Grid.Column="1">
-                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14"/>
-                            <TextBlock Text="{Binding OsSummary}" Style="{StaticResource SecondaryText}" FontSize="12" Margin="0,2,0,0"/>
-                        </StackPanel>
-                        <TextBlock x:Name="StatusText" Grid.Column="2" Text="离线" Style="{StaticResource SecondaryText}" VerticalAlignment="Center"/>
-                    </Grid>
-                    <DataTemplate.Triggers>
-                        <DataTrigger Binding="{Binding Status}" Value="{x:Static sh:DeviceStatus.Online}">
-                            <Setter TargetName="Dot" Property="Fill" Value="{DynamicResource SuccessBrush}"/>
-                            <Setter TargetName="StatusText" Property="Text" Value="在线"/>
-                            <Setter TargetName="StatusText" Property="Foreground" Value="{DynamicResource SuccessBrush}"/>
-                        </DataTrigger>
-                        <DataTrigger Binding="{Binding Status}" Value="{x:Static sh:DeviceStatus.Controlled}">
-                            <Setter TargetName="Dot" Property="Fill" Value="{DynamicResource AccentBrush}"/>
-                            <Setter TargetName="StatusText" Property="Text" Value="受控中"/>
-                            <Setter TargetName="StatusText" Property="Foreground" Value="{DynamicResource AccentBrush}"/>
-                        </DataTrigger>
-                    </DataTemplate.Triggers>
-                </DataTemplate>
-            </ListBox.ItemTemplate>
-        </ListBox>
-        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,12,0,0">
-            <Button Content="连接选中设备" Style="{StaticResource PrimaryButton}" Click="OnConnect"/>
-            <Button Content="刷新" Margin="8,0,0,0" Click="OnRefresh"/>
-            <Button x:Name="AutoStartBtn" Content="开机自启：关" Margin="8,0,0,0" Click="OnAutoStart"/>
-        </StackPanel>
-        <TextBlock Grid.Row="3" Text="{Binding Status}" Style="{StaticResource SecondaryText}" Margin="0,12,0,0"/>
     </Grid>
 </Window>

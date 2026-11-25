@@ -44,6 +44,7 @@ builder.Services.AddSingleton<SmtpService>();
 builder.Services.AddSingleton<ConnectionManager>();
 builder.Services.AddSingleton<SignalHub>();
 builder.Services.AddSingleton<RelayHub>();
+builder.Services.AddSingleton<DeviceCodeRegistry>();
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(o =>
@@ -135,6 +136,7 @@ app.UseStaticFiles();
 
 app.MapAuth();
 app.MapDevices();
+app.MapCodes();
 app.MapAdmin();
 app.MapRelay();
 

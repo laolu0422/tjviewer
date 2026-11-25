@@ -11,6 +11,9 @@ public partial class MainWindow : Window
     private readonly AppSession _s;
     private System.Windows.Forms.NotifyIcon? _tray;
     private bool _reallyClose;
+    private bool _loggingOut;
+
+    public event Action? LogoutRequested;
 
     public MainWindow(AppSession s)
     {
@@ -24,7 +27,11 @@ public partial class MainWindow : Window
         Loaded += async (_, _) =>
         {
             try { await _vm.InitializeAsync(); }
-            catch (Exception ex) { MessageBox.Show(this, ex.Message, "初始化失败"); }
+            catch (Exception ex)
+            {
+                _vm.Status = "初始化失败：" + ex.Message;
+                MessageBox.Show(this, ex.Message, "初始化失败");
+            }
             if (Environment.GetCommandLineArgs().Contains("--minimized")) Hide();
         };
         InitTray();
@@ -37,7 +44,8 @@ public partial class MainWindow : Window
         {
             _tray?.Dispose();
             await _vm.ShutdownAsync();
-            Application.Current.Shutdown();
+            if (_loggingOut) LogoutRequested?.Invoke();
+            else Application.Current.Shutdown();
         };
     }
 
@@ -45,7 +53,7 @@ public partial class MainWindow : Window
     {
         _tray = new System.Windows.Forms.NotifyIcon
         {
-            Icon = System.Drawing.SystemIcons.Application,
+            Icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath!) ?? System.Drawing.SystemIcons.Application,
             Text = "TjViewer 远程控制",
             Visible = true,
         };
@@ -96,11 +104,40 @@ public partial class MainWindow : Window
 
     private async void OnIncoming(ConnectIncomingPayload p)
     {
+        // 同账号设备直接建立连接；异账号（连接码）才弹确认
+        if (p.SameAccount)
+        {
+            await _vm.AcceptIncoming(p.SessionId, p.Mode, p.Capabilities);
+            return;
+        }
+        var action = p.Mode == "watch" ? "观看" : "远程控制";
         var r = MessageBox.Show(this,
-            $"设备「{p.ControllerDeviceName}」请求连接。\n请求能力：{p.Capabilities}\n\n是否接受？",
+            $"设备「{p.ControllerDeviceName}」请求{action}本机。\n请求能力：{p.Capabilities}\n\n是否接受？",
             "远程连接请求", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        if (r == MessageBoxResult.Yes) await _vm.AcceptIncoming(p.SessionId);
+        if (r == MessageBoxResult.Yes) await _vm.AcceptIncoming(p.SessionId, p.Mode, p.Capabilities);
         else await _vm.RejectIncoming(p.SessionId);
+    }
+
+    private async void OnFixedCode(object sender, RoutedEventArgs e)
+        => await _vm.SetFixedCodeAsync(FixedCodeCheck.IsChecked == true);
+
+    private async void OnCodeConnect(object sender, RoutedEventArgs e)
+    {
+        var dlg = new CodeConnectWindow(_s.Settings.LastCode ?? "") { Owner = this };
+        if (dlg.ShowDialog() != true) return;
+        await _vm.ConnectByCodeAsync(dlg.Code, dlg.Password, dlg.Mode, dlg.RememberCode);
+    }
+
+    private async void OnLogout(object sender, RoutedEventArgs e)
+    {
+        var r = MessageBox.Show(this, "退出登录将清除本地保存的账号与密码，是否继续？", "退出登录",
+            MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (r != MessageBoxResult.Yes) return;
+        _s.ClearCredentials();
+        _s.Clear();
+        _reallyClose = true;
+        _loggingOut = true;
+        Close();
     }
 
     private void OnOpenControl(RemoteSession session)

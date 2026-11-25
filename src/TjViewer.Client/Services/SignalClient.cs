@@ -18,6 +18,7 @@ public class SignalClient : IAsyncDisposable
     public event Action<ConnectFailedPayload>? ConnectFailed;
     public event Action<PeerSignalPayload>? PeerSignal;
     public event Action<RelaySwitchPayload>? RelaySwitch;
+    public event Action<CodesUpdatedPayload>? CodesUpdated;
     public event Action<SessionEndPayload>? SessionEnd;
     public event Action<string>? Disconnected;
 
@@ -55,6 +56,9 @@ public class SignalClient : IAsyncDisposable
     public Task SendRelaySwitch(string sessionId)
         => SendAsync(SignalJson.Create(SignalTypes.RelaySwitch, new RelaySwitchPayload(sessionId)));
 
+    public Task SendCodeConnect(string code, string password, string mode)
+        => SendAsync(SignalJson.Create(SignalTypes.CodeConnect, new CodeConnectPayload(code, password, mode)));
+
     private async Task ReceiveLoop(CancellationToken ct)
     {
         var buffer = new byte[8192];
@@ -90,6 +94,7 @@ public class SignalClient : IAsyncDisposable
             case SignalTypes.ConnectFailed: ConnectFailed?.Invoke(SignalJson.Parse<ConnectFailedPayload>(msg)!); break;
             case SignalTypes.PeerSignal: PeerSignal?.Invoke(SignalJson.Parse<PeerSignalPayload>(msg)!); break;
             case SignalTypes.RelaySwitch: RelaySwitch?.Invoke(SignalJson.Parse<RelaySwitchPayload>(msg)!); break;
+            case SignalTypes.CodesUpdated: CodesUpdated?.Invoke(SignalJson.Parse<CodesUpdatedPayload>(msg)!); break;
             case SignalTypes.SessionEnd: SessionEnd?.Invoke(SignalJson.Parse<SessionEndPayload>(msg)!); break;
         }
     }
