@@ -47,6 +47,7 @@ internal static class ProcHelper
             CreateNoWindow = true,
         };
         var p = Process.Start(psi) ?? throw new InvalidOperationException("无法启动 ffmpeg");
+        ChildProcessTracker.Track(p); // 完全关闭时统一终止，防止残留
         p.ErrorDataReceived += (_, e) => { if (e.Data is not null) FFmpegLocator.Emit(e.Data); };
         p.BeginErrorReadLine();
         return p;

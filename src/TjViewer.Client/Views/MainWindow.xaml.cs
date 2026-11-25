@@ -38,15 +38,69 @@ public partial class MainWindow : Window
         UpdateAutoStartButton();
         Closing += (_, e) =>
         {
-            if (!_reallyClose) { e.Cancel = true; Hide(); } // 最小化到托盘而非退出
+            if (_reallyClose) return; // 已确认完全关闭 / 退出登录，直接放行
+
+            // 已记住的关闭行为：直接生效，不再弹窗
+            var behavior = _s.Settings.CloseBehavior;
+            if (behavior == "minimize") { e.Cancel = true; Hide(); return; }
+            if (behavior == "exit") { BeginFullExit(); return; }
+
+            // 弹窗让用户选择关闭行为
+            var dlg = new CloseOptionsWindow { Owner = this };
+            var ok = dlg.ShowDialog() == true;
+            if (ok && dlg.Choice == CloseChoice.Exit)
+            {
+                if (dlg.Remember) SaveCloseBehavior("exit");
+                BeginFullExit(); // 不取消，窗口继续关闭
+            }
+            else if (ok && dlg.Choice == CloseChoice.Minimize)
+            {
+                if (dlg.Remember) SaveCloseBehavior("minimize");
+                e.Cancel = true;
+                Hide();
+            }
+            else
+            {
+                e.Cancel = true; // 取消弹窗：保持窗口
+            }
         };
         Closed += async (_, _) =>
         {
             _tray?.Dispose();
             await _vm.ShutdownAsync();
+            TjViewer.Core.ChildProcessTracker.KillAll(); // 终止残留子进程（ffmpeg 等），确保无后台残留
             if (_loggingOut) LogoutRequested?.Invoke();
             else Application.Current.Shutdown();
         };
+    }
+
+    /// <summary>完全关闭：标记用户退出（后台服务本会话不再拉起），随后窗口关闭触发清理。</summary>
+    private void BeginFullExit()
+    {
+        _reallyClose = true;
+        ServiceIntegration.MarkUserExit();
+    }
+
+    private void SaveCloseBehavior(string behavior)
+    {
+        _s.Settings.CloseBehavior = behavior;
+        SecretStore.Save(_s.Settings);
+    }
+
+    /// <summary>托盘「关闭行为设置」：重新选择关闭行为；取消勾选「记住」则恢复每次询问。</summary>
+    private void ConfigureCloseBehavior()
+    {
+        var remembered = _s.Settings.CloseBehavior is "exit" or "minimize";
+        // 从托盘打开时主窗口可能隐藏，不设 Owner、居中屏幕，确保对话框前置可见
+        var dlg = new CloseOptionsWindow(remembered) { WindowStartupLocation = WindowStartupLocation.CenterScreen };
+        if (dlg.ShowDialog() != true) return;
+        var behavior = dlg.Choice switch
+        {
+            CloseChoice.Exit => "exit",
+            CloseChoice.Minimize => "minimize",
+            _ => "ask",
+        };
+        SaveCloseBehavior(dlg.Remember ? behavior : "ask");
     }
 
     private void InitTray()
@@ -60,10 +114,10 @@ public partial class MainWindow : Window
         _tray.DoubleClick += (_, _) => ShowFromTray();
         var menu = new System.Windows.Forms.ContextMenuStrip();
         menu.Items.Add("打开主界面", null, (_, _) => ShowFromTray());
+        menu.Items.Add("关闭行为设置…", null, (_, _) => ConfigureCloseBehavior());
         menu.Items.Add("退出", null, (_, _) =>
         {
-            _reallyClose = true;
-            ServiceIntegration.MarkUserExit(); // 用户主动退出，后台服务本会话不再拉起
+            BeginFullExit(); // 完全关闭：标记用户退出，后台服务本会话不再拉起
             Close();
         });
         _tray.ContextMenuStrip = menu;
@@ -81,13 +135,16 @@ public partial class MainWindow : Window
 
     private void OnAutoStart(object sender, RoutedEventArgs e)
     {
+        // 自启动开关仅持久化注册表配置：不立即重启、不影响当前会话，下次手动启动/重新登录后生效
         if (AutoStart.IsEnabled())
         {
             AutoStart.Disable();
         }
         else
         {
-            var r = MessageBox.Show(this, "开启开机自启后，TjViewer 将在你登录 Windows 时自动运行并上线。是否开启？",
+            var r = MessageBox.Show(this,
+                "开启后，TjViewer 将在下次启动（重启软件或重新登录 Windows）时自动运行并上线。\n\n" +
+                "该设置仅保存配置，不会立即重启软件，当前会话可继续正常使用。是否开启？",
                 "开机自启", MessageBoxButton.YesNo, MessageBoxImage.Question);
             if (r != MessageBoxResult.Yes) return;
             AutoStart.Enable();

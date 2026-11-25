@@ -19,6 +19,8 @@ public class ClientSettings
     public bool AutoLogin { get; set; }
     /// <summary>上次使用的陌生设备连接码（不保存验证码）。</summary>
     public string? LastCode { get; set; }
+    /// <summary>主窗口关闭行为：ask 每次弹窗询问 / exit 完全关闭 / minimize 最小化到托盘。</summary>
+    public string CloseBehavior { get; set; } = "ask";
 }
 
 /// <summary>本地设置与凭据存储：刷新令牌用 DPAPI 加密，禁止明文落盘（见 PRD §7.8）。</summary>

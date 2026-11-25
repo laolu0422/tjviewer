@@ -1,3 +1,4 @@
+using System.Threading;
 using System.Windows;
 using TjViewer.Client.Services;
 using TjViewer.Client.Views;
@@ -8,10 +9,18 @@ namespace TjViewer.Client;
 public partial class App : Application
 {
     private AppSession? _session;
+    private static Mutex? _singleInstanceMutex;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        // 单实例：避免后台服务与注册表自启重复拉起，确保无残留进程
+        _singleInstanceMutex = new Mutex(true, @"Local\TjViewer.Client.SingleInstance", out var createdNew);
+        if (!createdNew)
+        {
+            Shutdown();
+            return;
+        }
         RuntimeTuning.Apply(); // 1ms 定时器 + 高优先级，降低采集/编码/渲染排队时延
         ServiceIntegration.ClearUserExit(); // 手动启动时恢复后台服务托管
         ThemeManager.Initialize();
