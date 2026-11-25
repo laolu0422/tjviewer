@@ -77,6 +77,9 @@ public static class InputInjector
         }
     }
 
+    /// <summary>虚拟键码 → 扫描码（MAPVK_VK_TO_VSC=0）。</summary>
+    public static ushort VirtualKeyToScanCode(ushort vk) => (ushort)MapVirtualKey(vk, 0);
+
     private static void Send(INPUT input)
         => SendInput(1, new[] { input }, Marshal.SizeOf<INPUT>());
 }

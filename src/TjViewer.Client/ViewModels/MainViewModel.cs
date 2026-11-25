@@ -12,6 +12,7 @@ public partial class MainViewModel : ObservableObject
     private readonly ApiClient _api;
     private SignalClient? _signal;
     private CancellationTokenSource? _hbCts;
+    private readonly List<RemoteSession> _sessions = new();
 
     public ObservableCollection<DeviceDto> Devices { get; } = new();
 
@@ -21,7 +22,7 @@ public partial class MainViewModel : ObservableObject
     public string ThisDeviceId => _s.DeviceId ?? "";
 
     public event Action<ConnectIncomingPayload>? IncomingConnect;
-    public event Action<ConnectReadyPayload>? OpenControl;
+    public event Action<RemoteSession>? OpenControl;
     public event Action<string>? Notify;
 
     public MainViewModel(AppSession s)
@@ -40,7 +41,7 @@ public partial class MainViewModel : ObservableObject
         _signal = new SignalClient(_s);
         _signal.Presence += p => OnUi(() => UpdatePresence(p));
         _signal.ConnectIncoming += p => OnUi(() => IncomingConnect?.Invoke(p));
-        _signal.ConnectReady += p => OnUi(() => OpenControl?.Invoke(p));
+        _signal.ConnectReady += p => OnUi(() => OnConnectReady(p));
         _signal.ConnectFailed += p => OnUi(() => { Status = p.Reason; Notify?.Invoke(p.Reason); });
         _signal.SessionEnd += _ => OnUi(() => Notify?.Invoke("会话已结束"));
         _signal.Disconnected += reason => OnUi(() => Status = "信令断开：" + reason);
@@ -65,7 +66,24 @@ public partial class MainViewModel : ObservableObject
         await _signal.RequestConnect(d.Id, Capabilities.All);
     }
 
-    public Task AcceptIncoming(string sessionId) => _signal?.Accept(sessionId) ?? Task.CompletedTask;
+    private void OnConnectReady(ConnectReadyPayload p)
+    {
+        if (_signal is null) return;
+        var session = new RemoteSession(_signal, p.SessionId, isController: true);
+        _sessions.Add(session);
+        _ = session.StartAsync();
+        OpenControl?.Invoke(session);
+    }
+
+    public async Task AcceptIncoming(string sessionId)
+    {
+        if (_signal is null) return;
+        await _signal.Accept(sessionId);
+        var session = new RemoteSession(_signal, sessionId, isController: false);
+        _sessions.Add(session);
+        _ = session.StartAsync();
+    }
+
     public Task RejectIncoming(string sessionId) => _signal?.Reject(sessionId, "用户拒绝") ?? Task.CompletedTask;
     public Task EndSession(string sessionId) => _signal?.EndSession(sessionId, "用户断开") ?? Task.CompletedTask;
 
@@ -113,6 +131,8 @@ public partial class MainViewModel : ObservableObject
     public async Task ShutdownAsync()
     {
         _hbCts?.Cancel();
+        foreach (var s in _sessions) await s.DisposeAsync();
+        _sessions.Clear();
         if (_signal is not null) await _signal.DisposeAsync();
     }
 }

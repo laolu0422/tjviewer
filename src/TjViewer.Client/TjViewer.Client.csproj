@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\TjViewer.Shared\TjViewer.Shared.csproj" />
+    <ProjectReference Include="..\TjViewer.Core\TjViewer.Core.csproj" />
   </ItemGroup>
 
 </Project>

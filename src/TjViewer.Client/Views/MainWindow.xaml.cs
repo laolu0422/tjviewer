@@ -48,9 +48,9 @@ public partial class MainWindow : Window
         else await _vm.RejectIncoming(p.SessionId);
     }
 
-    private void OnOpenControl(ConnectReadyPayload p)
+    private void OnOpenControl(RemoteSession session)
     {
-        var win = new ControlWindow(_s, p, _vm);
+        var win = new ControlWindow(session);
         win.Show();
     }
 }
