@@ -12,6 +12,8 @@ $env:DOTNET_ROOT = Split-Path $dn
 $root = $PSScriptRoot
 $dist = Join-Path $root 'dist'
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
+# 安装脚本随产物一起分发，便于离线安装
+Copy-Item (Join-Path $root 'scripts/install-server.sh') (Join-Path $dist 'install-server.sh') -Force
 
 if (-not $ClientOnly) {
     Write-Host "发布服务器（linux-x64，自包含）…"

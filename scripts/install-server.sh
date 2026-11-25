@@ -21,6 +21,7 @@ SERVICE="tjviewer"
 RUN_USER="tjviewer"
 PORT="${TJVIEWER_PORT:-5000}"
 VERSION="${TJVIEWER_VERSION:-latest}"
+PROXY="${TJVIEWER_PROXY:-}"
 PKG_FILE=""
 
 log() { printf '\033[35m[TjViewer]\033[0m %s\n' "$*"; }
@@ -30,10 +31,12 @@ usage() {
 用法: install-server.sh [选项]
   --file <tar.gz>       使用本地安装包（离线安装）
   --port <端口>         监听端口，默认 5000
+  --proxy <url>         下载安装包走代理，如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080
   --uninstall           卸载服务与程序（保留 /var/lib/tjviewer 数据）
 环境变量:
   TJVIEWER_VERSION      指定 Release 标签，默认 latest
   TJVIEWER_PUBLIC_URL   对外访问地址，默认自动取本机第一个 IPv4
+  TJVIEWER_PROXY        同 --proxy
 USAGE
 }
 
@@ -41,6 +44,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --file) PKG_FILE="${2:-}"; shift 2 ;;
         --port) PORT="${2:-}"; shift 2 ;;
+        --proxy) PROXY="${2:-}"; shift 2 ;;
         --uninstall) UNINSTALL=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) die "未知参数：$1" ;;
@@ -76,8 +80,13 @@ else
         URL="https://github.com/$REPO/releases/download/$VERSION/$ASSET"
     fi
     SRC="$TMP_DIR/$ASSET"
+    CURL_OPTS=(-fL --retry 3 --connect-timeout 15 --speed-time 60 --speed-limit 1024)
+    if [ -n "$PROXY" ]; then
+        CURL_OPTS+=(--proxy "$PROXY")
+        log "使用代理：$PROXY"
+    fi
     log "下载 $URL"
-    curl -fL --retry 3 --connect-timeout 15 -o "$SRC" "$URL" || die "下载失败（仓库需为公开，或改用 --file 离线安装）"
+    curl "${CURL_OPTS[@]}" -o "$SRC" "$URL" || die "下载失败（国内网络可加 --proxy http://127.0.0.1:7890，或改用 --file 离线安装）"
 fi
 
 # ---- 运行依赖：.NET 自包含包仍需系统 ICU ----
