@@ -16,7 +16,7 @@ public static class AdminEndpoints
 
         g.MapGet("/users", async Task<IResult> (AppDbContext db) =>
         {
-            var users = await db.Users.OrderBy(u => u.CreatedAt).ToListAsync();
+            var users = (await db.Users.ToListAsync()).OrderBy(u => u.CreatedAt).ToList();
             var counts = await db.Devices.GroupBy(d => d.OwnerId).Select(x => new { x.Key, C = x.Count() }).ToListAsync();
             var map = counts.ToDictionary(x => x.Key, x => x.C);
             return Results.Ok(users.Select(u => new
