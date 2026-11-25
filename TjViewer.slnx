@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/TjViewer.Client/TjViewer.Client.csproj" />
+    <Project Path="src/TjViewer.Server/TjViewer.Server.csproj" />
+    <Project Path="src/TjViewer.Shared/TjViewer.Shared.csproj" />
+  </Folder>
+</Solution>

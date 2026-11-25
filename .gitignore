@@ -1,0 +1,24 @@
+# 生成物
+bin/
+obj/
+publish/
+*.user
+*.suo
+
+# 运行时数据与秘密（禁止入库，见 PRD §7）
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+jwt.key
+*.secret
+
+# IDE / 工具
+.vs/
+.idea/
+.vscode/
+.screenshots/
+
+# 系统
+Thumbs.db
+Desktop.ini

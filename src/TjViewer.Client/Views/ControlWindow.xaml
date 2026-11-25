@@ -1,0 +1,21 @@
+<Window x:Class="TjViewer.Client.Views.ControlWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="TjViewer - 远程控制" Height="600" Width="900" WindowStartupLocation="CenterScreen">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Background="#EEE">
+            <Button Content="断开连接" Padding="8,4" Margin="6" Click="OnDisconnect"/>
+            <TextBlock Text="画质：自适应（M3 接入）" VerticalAlignment="Center" Margin="8,0"/>
+            <TextBlock Text="音频：M5 接入" VerticalAlignment="Center" Margin="8,0"/>
+        </StackPanel>
+        <Border Grid.Row="1" Background="#111" Margin="6">
+            <TextBlock x:Name="InfoText" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap"/>
+        </Border>
+        <TextBlock Grid.Row="2" Text="桌面画面 / 键鼠操控 / 双向音频将在 M2–M5 接入此窗口。" Foreground="Gray" Margin="6"/>
+    </Grid>
+</Window>

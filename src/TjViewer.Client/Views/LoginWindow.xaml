@@ -1,0 +1,47 @@
+<Window x:Class="TjViewer.Client.Views.LoginWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="TjViewer - 登录" Height="480" Width="400" WindowStartupLocation="CenterScreen">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <StackPanel Grid.Row="0" Margin="0,0,0,8">
+            <TextBlock Text="服务器地址"/>
+            <TextBox Text="{Binding ServerUrl, UpdateSourceTrigger=PropertyChanged}" Padding="4"/>
+        </StackPanel>
+        <TabControl Grid.Row="1">
+            <TabItem Header="登录">
+                <StackPanel Margin="8">
+                    <TextBlock Text="用户名或邮箱"/>
+                    <TextBox Text="{Binding Account, UpdateSourceTrigger=PropertyChanged}" Padding="4"/>
+                    <TextBlock Text="密码" Margin="0,8,0,0"/>
+                    <PasswordBox x:Name="LoginPassword" Padding="4"/>
+                    <Button Content="登录" Margin="0,12,0,0" Padding="6" Click="OnLogin"/>
+                </StackPanel>
+            </TabItem>
+            <TabItem Header="注册">
+                <StackPanel Margin="8">
+                    <TextBlock Text="用户名（3–32 位字母/数字/下划线）"/>
+                    <TextBox Text="{Binding RegUsername, UpdateSourceTrigger=PropertyChanged}" Padding="4"/>
+                    <TextBlock Text="邮箱（必填）" Margin="0,8,0,0"/>
+                    <TextBox Text="{Binding RegEmail, UpdateSourceTrigger=PropertyChanged}" Padding="4"/>
+                    <TextBlock Text="密码（至少 8 位含字母与数字）" Margin="0,8,0,0"/>
+                    <PasswordBox x:Name="RegPassword" Padding="4"/>
+                    <Button Content="注册" Margin="0,12,0,0" Padding="6" Click="OnRegister"/>
+                </StackPanel>
+            </TabItem>
+            <TabItem Header="找回密码">
+                <StackPanel Margin="8">
+                    <TextBlock Text="注册邮箱"/>
+                    <TextBox Text="{Binding ResetEmail, UpdateSourceTrigger=PropertyChanged}" Padding="4"/>
+                    <Button Content="发送重置邮件" Margin="0,12,0,0" Padding="6" Click="OnReset"/>
+                    <TextBlock Text="重置链接将发送到邮箱，30 分钟内有效。" Margin="0,8,0,0" Foreground="Gray" TextWrapping="Wrap"/>
+                </StackPanel>
+            </TabItem>
+        </TabControl>
+        <TextBlock Grid.Row="2" Text="{Binding Status}" TextWrapping="Wrap" Margin="0,8,0,0" Foreground="Gray"/>
+    </Grid>
+</Window>
