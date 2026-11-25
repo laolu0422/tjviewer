@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using TjViewer.Core.Audio;
 using TjViewer.Core.Input;
 using TjViewer.Core.Net;
 using TjViewer.Core.Video;
@@ -22,6 +23,9 @@ public sealed class RemoteSession : IAsyncDisposable
     private KcpUdpChannel? _channel;
     private HostVideoSender? _hostSender;
     private ControllerVideoReceiver? _ctrlReceiver;
+    private AudioSender? _audioSender;
+    private AudioReceiver? _audioReceiver;
+    private AudioSender? _micSender;
     private readonly Action<PeerSignalPayload> _onPeer;
     private int _hostW = 1920, _hostH = 1080;
 
@@ -84,8 +88,37 @@ public sealed class RemoteSession : IAsyncDisposable
             _hostH = _hostSender.Height;
             _channel.MessageReceived += OnHostMessage;
         }
+        // 双向音频（设备不可用时不影响视频，见 PRD FR-07）
+        try
+        {
+            if (_isController)
+            {
+                _audioReceiver = new AudioReceiver(_channel, 0); // 收听被控系统声音
+            }
+            else
+            {
+                _audioSender = new AudioSender(_channel, 0, loopback: true); // 发送系统声音
+                _audioReceiver = new AudioReceiver(_channel, 1); // 收听控制端麦克风
+            }
+        }
+        catch { Status?.Invoke("音频设备不可用，仅视频"); }
+
         ChannelReady?.Invoke();
         Status?.Invoke("直连已建立");
+    }
+
+    /// <summary>控制端开启麦克风回传（须用户主动同意，见 PRD §5.5）。</summary>
+    public void StartMic()
+    {
+        if (!_isController || _channel is null || _micSender is not null) return;
+        try { _micSender = new AudioSender(_channel, 1, loopback: false); }
+        catch { Status?.Invoke("麦克风不可用"); }
+    }
+
+    public void StopMic()
+    {
+        _micSender?.Dispose();
+        _micSender = null;
     }
 
     private void OnHostMessage(byte[] msg)
@@ -133,6 +166,9 @@ public sealed class RemoteSession : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _signal.PeerSignal -= _onPeer;
+        _micSender?.Dispose();
+        _audioSender?.Dispose();
+        _audioReceiver?.Dispose();
         if (_ctrlReceiver is not null) await _ctrlReceiver.DisposeAsync();
         if (_hostSender is not null) await _hostSender.DisposeAsync();
         if (_channel is not null) await _channel.DisposeAsync();

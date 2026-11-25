@@ -39,6 +39,9 @@ public partial class ControlWindow : Window
         else _session.SendQuality(new QualityRequest("manual", idx - 1));
     }
 
+    private void OnMicOn(object sender, RoutedEventArgs e) => _session.StartMic();
+    private void OnMicOff(object sender, RoutedEventArgs e) => _session.StopMic();
+
     private void OnFrame(byte[] bgra)
     {
         Dispatcher.Invoke(() =>
