@@ -141,6 +141,7 @@ public sealed class ControllerVideoReceiver : IAsyncDisposable
         _ffmpeg = ffmpeg;
         _onMessage = OnMessage;
         _channel.MessageReceived += _onMessage;
+        HardwareCodecs.WarmUp(ffmpeg); // 后台预热编解码探测，避免首帧被探测耗时阻塞
         _writer = Task.Run(WriterLoop);
     }
 
