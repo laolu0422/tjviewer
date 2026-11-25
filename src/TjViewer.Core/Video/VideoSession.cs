@@ -31,13 +31,24 @@ public sealed class HostVideoSender : IAsyncDisposable
     {
         _channel = channel;
         _ffmpeg = ffmpeg;
-        _capturer = new GdiCapturer();
+        _capturer = CreateCapturer();
         _tierIndex = Math.Clamp(initialTier, 0, QualityProfiles.Tiers.Length - 1);
         CreateEncoder();
         var tier = QualityProfiles.Tiers[_tierIndex];
         var info = JsonSerializer.SerializeToUtf8Bytes(new VideoInfo(_capturer.Width, _capturer.Height, tier.MaxFps), SignalJson.Options);
         _channel.Send(ChannelMux.Wrap(ChannelMsgType.Control, info));
         _loop = Task.Run(CaptureLoop);
+    }
+
+    /// <summary>优先 DXGI Desktop Duplication（低延迟、自带光标合成），不可用时回退 GDI。</summary>
+    private static IDesktopCapturer CreateCapturer()
+    {
+        try { return new DxgiCapturer(); }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Trace.WriteLine("DXGI 采集不可用，回退 GDI：" + ex.Message);
+            return new GdiCapturer();
+        }
     }
 
     private void CreateEncoder()
@@ -54,18 +65,28 @@ public sealed class HostVideoSender : IAsyncDisposable
     private async Task CaptureLoop()
     {
         var adaptWatch = System.Diagnostics.Stopwatch.StartNew();
+        var frameWatch = System.Diagnostics.Stopwatch.StartNew();
         while (!_cts.IsCancellationRequested)
         {
             var tier = QualityProfiles.Tiers[_tierIndex];
-            var frame = _capturer.CaptureFrame();
+            var frame = _capturer.CaptureFrame(Math.Max(1, 1000 / Math.Max(1, tier.MaxFps)));
             if (frame is not null)
             {
                 lock (_encLock)
                 {
+                    // 分辨率变化（DXGI 显示模式切换）时按新尺寸重建编码器
+                    if (_encoder is null || _encoder.Width != _capturer.Width || _encoder.Height != _capturer.Height) CreateEncoder();
                     if (_encoder is not null) { try { _encoder.EncodeFrameAsync(frame).Wait(); } catch { } }
                 }
             }
-            try { await Task.Delay(Math.Max(1, 1000 / tier.MaxFps), _cts.Token); } catch { break; }
+            // DXGI 不会自动限帧，按档位帧率补齐间隔；GDI 采集后同样按档位节流
+            var budget = Math.Max(1, 1000 / Math.Max(1, tier.MaxFps));
+            var remain = budget - (int)frameWatch.ElapsedMilliseconds;
+            if (remain > 0)
+            {
+                try { await Task.Delay(remain, _cts.Token); } catch { break; }
+            }
+            frameWatch.Restart();
 
             // 自适应：每秒评估拥塞；降档快、升档慢（连续 3 次空闲才升档）
             if (_adaptive && adaptWatch.ElapsedMilliseconds >= 1000)
@@ -130,11 +151,13 @@ public sealed class ControllerVideoReceiver : IAsyncDisposable
         if (type == ChannelMsgType.Control)
         {
             var info = JsonSerializer.Deserialize<VideoInfo>(payload, SignalJson.Options);
-            if (info is not null && _decoder is null)
+            if (info is not null && (_decoder is null || _decoder.Width != info.Width || _decoder.Height != info.Height))
             {
                 Info = info;
+                var old = _decoder;
                 _decoder = new VideoDecoder(_ffmpeg, info.Width, info.Height);
                 _decoder.FrameDecoded += f => FrameDecoded?.Invoke(f);
+                if (old is not null) _ = old.DisposeAsync().AsTask(); // 分辨率变化：异步替换解码器
             }
         }
         else if (type == ChannelMsgType.Video)
