@@ -11,6 +11,14 @@
         </Grid.RowDefinitions>
         <StackPanel Grid.Row="0" Orientation="Horizontal" Background="#EEE">
             <Button Content="断开连接" Padding="8,4" Margin="6" Click="OnDisconnect"/>
+            <TextBlock Text="画质:" VerticalAlignment="Center" Margin="8,0,4,0"/>
+            <ComboBox x:Name="QualityBox" Width="96" Margin="0,4" SelectionChanged="OnQualityChanged">
+                <ComboBoxItem>自适应</ComboBoxItem>
+                <ComboBoxItem>高</ComboBoxItem>
+                <ComboBoxItem>中</ComboBoxItem>
+                <ComboBoxItem>低</ComboBoxItem>
+                <ComboBoxItem>极低</ComboBoxItem>
+            </ComboBox>
             <TextBlock x:Name="StatusText" Text="正在建立直连…" VerticalAlignment="Center" Margin="8,0"/>
         </StackPanel>
         <Border Grid.Row="1" Background="#111" Margin="6">

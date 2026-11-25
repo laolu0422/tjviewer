@@ -28,7 +28,15 @@ public partial class ControlWindow : Window
             await _session.DisposeAsync();
         };
         VideoImage.Focusable = true;
+        QualityBox.SelectedIndex = 0;
         Loaded += (_, _) => VideoImage.Focus();
+    }
+
+    private void OnQualityChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        int idx = QualityBox.SelectedIndex;
+        if (idx <= 0) _session.SendQuality(new QualityRequest("adaptive"));
+        else _session.SendQuality(new QualityRequest("manual", idx - 1));
     }
 
     private void OnFrame(byte[] bgra)

@@ -96,6 +96,9 @@ public class KcpUdpChannel : IAsyncDisposable
         lock (_lock) _kcp.Send(data);
     }
 
+    /// <summary>发送队列深度（拥塞信号，用于自适应码率，见 PRD FR-05/M3）。</summary>
+    public uint WaitSnd { get { lock (_lock) return _kcp.WaitSnd; } }
+
     public async ValueTask DisposeAsync()
     {
         _cts.Cancel();

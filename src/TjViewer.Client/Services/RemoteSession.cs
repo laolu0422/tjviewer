@@ -92,9 +92,18 @@ public sealed class RemoteSession : IAsyncDisposable
     {
         if (msg.Length < 1) return;
         var (type, payload) = ChannelMux.Unwrap(msg);
-        if (type != ChannelMsgType.Input) return;
-        var ev = JsonSerializer.Deserialize<InputEvent>(payload, SignalJson.Options);
-        if (ev is not null) ApplyInput(ev);
+        if (type == ChannelMsgType.Input)
+        {
+            var ev = JsonSerializer.Deserialize<InputEvent>(payload, SignalJson.Options);
+            if (ev is not null) ApplyInput(ev);
+        }
+        else if (type == ChannelMsgType.Quality && _hostSender is not null)
+        {
+            var q = JsonSerializer.Deserialize<QualityRequest>(payload, SignalJson.Options);
+            if (q is null) return;
+            if (q.Mode == "adaptive") _hostSender.SetAdaptive();
+            else _hostSender.SetManualTier(q.Tier);
+        }
     }
 
     private void ApplyInput(InputEvent ev)
@@ -113,6 +122,12 @@ public sealed class RemoteSession : IAsyncDisposable
     {
         if (_channel is null) return;
         _channel.Send(ChannelMux.Wrap(ChannelMsgType.Input, JsonSerializer.SerializeToUtf8Bytes(ev, SignalJson.Options)));
+    }
+
+    public void SendQuality(QualityRequest q)
+    {
+        if (_channel is null) return;
+        _channel.Send(ChannelMux.Wrap(ChannelMsgType.Quality, JsonSerializer.SerializeToUtf8Bytes(q, SignalJson.Options)));
     }
 
     public async ValueTask DisposeAsync()
