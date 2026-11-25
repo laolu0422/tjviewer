@@ -1,6 +1,8 @@
+using System.IO;
 using System.Net;
 using System.Text.Json;
 using TjViewer.Core.Audio;
+using TjViewer.Core.Files;
 using TjViewer.Core.Input;
 using TjViewer.Core.Net;
 using TjViewer.Core.Video;
@@ -26,6 +28,11 @@ public sealed class RemoteSession : IAsyncDisposable
     private AudioSender? _audioSender;
     private AudioReceiver? _audioReceiver;
     private AudioSender? _micSender;
+    private FileReceiver? _fileReceiver;
+
+    public event Action<string, double>? FileProgress;
+    public event Action<string, string>? FileCompleted;
+    public event Action<string, string>? FileFailed;
     private readonly Action<PeerSignalPayload> _onPeer;
     private int _hostW = 1920, _hostH = 1080;
 
@@ -103,9 +110,23 @@ public sealed class RemoteSession : IAsyncDisposable
         }
         catch { Status?.Invoke("音频设备不可用，仅视频"); }
 
+        // 文件接收（保存到 下载/TjViewer，见 PRD FR-08）
+        try
+        {
+            var saveDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "TjViewer");
+            _fileReceiver = new FileReceiver(_channel, saveDir);
+            _fileReceiver.Progress += (n, p) => FileProgress?.Invoke(n, p);
+            _fileReceiver.Completed += (n, path) => FileCompleted?.Invoke(n, path);
+            _fileReceiver.Failed += (n, r) => FileFailed?.Invoke(n, r);
+        }
+        catch { }
+
         ChannelReady?.Invoke();
         Status?.Invoke("直连已建立");
     }
+
+    public Task SendFileAsync(string path)
+        => _channel is null ? Task.CompletedTask : FileSender.SendFileAsync(path, _channel);
 
     /// <summary>控制端开启麦克风回传（须用户主动同意，见 PRD §5.5）。</summary>
     public void StartMic()
@@ -169,6 +190,7 @@ public sealed class RemoteSession : IAsyncDisposable
         _micSender?.Dispose();
         _audioSender?.Dispose();
         _audioReceiver?.Dispose();
+        _fileReceiver?.Dispose();
         if (_ctrlReceiver is not null) await _ctrlReceiver.DisposeAsync();
         if (_hostSender is not null) await _hostSender.DisposeAsync();
         if (_channel is not null) await _channel.DisposeAsync();

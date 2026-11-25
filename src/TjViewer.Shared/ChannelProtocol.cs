@@ -28,3 +28,15 @@ public sealed record VideoInfo(int Width, int Height, int Fps);
 
 /// <summary>画质请求（控制端→被控端，见 PRD FR-05/M3）。Mode: adaptive/manual。</summary>
 public sealed record QualityRequest(string Mode, int Tier = 1);
+
+/// <summary>文件传输子类型（见 PRD FR-08/M6）。</summary>
+public static class FileMsgType
+{
+    public const byte Offer = 0;
+    public const byte Chunk = 1;
+    public const byte Done = 2;
+    public const byte Resume = 3;
+}
+
+/// <summary>文件传输要约。</summary>
+public sealed record FileOffer(string TransferId, string Name, long Size, string Sha256);

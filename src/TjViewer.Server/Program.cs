@@ -135,6 +135,7 @@ app.UseStaticFiles();
 app.MapAuth();
 app.MapDevices();
 app.MapAdmin();
+app.MapRelay();
 
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok", time = DateTimeOffset.UtcNow }));
 

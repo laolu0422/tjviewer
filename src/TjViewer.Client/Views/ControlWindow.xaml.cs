@@ -22,6 +22,9 @@ public partial class ControlWindow : Window
         _session.FrameDecoded += OnFrame;
         _session.Status += s => Dispatcher.Invoke(() => StatusText.Text = s);
         _session.ChannelReady += () => Dispatcher.Invoke(() => StatusText.Text = "直连已建立");
+        _session.FileCompleted += (n, path) => Dispatcher.Invoke(() => MessageBox.Show(this, $"已接收：{n}\n{path}", "文件传输"));
+        _session.FileFailed += (n, r) => Dispatcher.Invoke(() => MessageBox.Show(this, $"接收失败：{n}（{r}）", "文件传输"));
+        _session.FileProgress += (n, p) => Dispatcher.Invoke(() => StatusText.Text = $"接收 {n}：{p:P0}");
         Closed += async (_, _) =>
         {
             _session.FrameDecoded -= OnFrame;
@@ -41,6 +44,17 @@ public partial class ControlWindow : Window
 
     private void OnMicOn(object sender, RoutedEventArgs e) => _session.StartMic();
     private void OnMicOff(object sender, RoutedEventArgs e) => _session.StopMic();
+
+    private async void OnSendFile(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog { Title = "选择要发送的文件" };
+        if (dlg.ShowDialog(this) == true)
+        {
+            StatusText.Text = $"发送 {System.IO.Path.GetFileName(dlg.FileName)}…";
+            try { await _session.SendFileAsync(dlg.FileName); StatusText.Text = "发送完成"; }
+            catch (Exception ex) { MessageBox.Show(this, ex.Message, "发送失败"); }
+        }
+    }
 
     private void OnFrame(byte[] bgra)
     {

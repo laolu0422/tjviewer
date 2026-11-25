@@ -20,6 +20,7 @@
                 <ComboBoxItem>极低</ComboBoxItem>
             </ComboBox>
             <ToggleButton x:Name="MicBtn" Content="麦克风" Margin="8,4" Padding="6,2" Checked="OnMicOn" Unchecked="OnMicOff"/>
+            <Button Content="发送文件" Margin="8,4" Padding="6,2" Click="OnSendFile"/>
             <TextBlock x:Name="StatusText" Text="正在建立直连…" VerticalAlignment="Center" Margin="8,0"/>
         </StackPanel>
         <Border Grid.Row="1" Background="#111" Margin="6">
