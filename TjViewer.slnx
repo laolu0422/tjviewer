@@ -4,6 +4,7 @@
     <Project Path="src/TjViewer.Core/TjViewer.Core.csproj" />
     <Project Path="src/TjViewer.Server/TjViewer.Server.csproj" />
     <Project Path="src/TjViewer.Service/TjViewer.Service.csproj" />
+    <Project Path="src/TjViewer.SecureAgent/TjViewer.SecureAgent.csproj" />
     <Project Path="src/TjViewer.Shared/TjViewer.Shared.csproj" />
   </Folder>
 </Solution>

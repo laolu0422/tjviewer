@@ -25,6 +25,7 @@ public sealed class HostVideoSender : IAsyncDisposable
     private int _outHeight;
     private bool _adaptive = true;
     private int _stableCount;
+    private volatile bool _paused;
     private readonly Task _loop;
 
     /// <summary>采集到的原始桌面尺寸。</summary>
@@ -92,6 +93,12 @@ public sealed class HostVideoSender : IAsyncDisposable
         long backlogStartMs = -1, lastUpgradeMs = 0;
         while (!_cts.IsCancellationRequested)
         {
+            // 安全桌面期间由 SecureAgent 接管采集，本地循环暂停
+            if (_paused)
+            {
+                try { await Task.Delay(50, _cts.Token); } catch { break; }
+                continue;
+            }
             int fps = Math.Max(1, _fps);
             // 只等待极短时间：无更新时立刻复用上一帧，避免采集阻塞编码节拍（排队时延最小化）
             var frame = _capturer.CaptureFrame(Math.Clamp(1000 / fps / 4, 2, 4));
@@ -178,6 +185,11 @@ public sealed class HostVideoSender : IAsyncDisposable
         _bitrateKbps = VideoLimits.ClampBitrate(QualityProfiles.Tiers[_tierIndex].MaxBitrateKbps);
         CreateEncoder();
     }
+
+    /// <summary>暂停本地采集/编码（安全桌面由 SecureAgent 接管时调用）。</summary>
+    public void Pause() => _paused = true;
+    /// <summary>恢复本地采集/编码。</summary>
+    public void Resume() => _paused = false;
 
     public async ValueTask DisposeAsync()
     {

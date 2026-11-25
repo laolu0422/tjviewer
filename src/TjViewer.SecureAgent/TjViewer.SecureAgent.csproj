@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>TjViewer.SecureAgent</RootNamespace>
+    <AssemblyName>TjViewer.SecureAgent</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TjViewer.Core\TjViewer.Core.csproj" />
+    <ProjectReference Include="..\TjViewer.Shared\TjViewer.Shared.csproj" />
+  </ItemGroup>
+
+</Project>

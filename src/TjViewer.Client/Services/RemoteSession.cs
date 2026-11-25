@@ -31,6 +31,7 @@ public sealed class RemoteSession : IAsyncDisposable
     private KcpUdpChannel? _kcp;
     private RelayChannel? _relay;
     private HostVideoSender? _hostSender;
+    private SecureDesktopBridge? _secureBridge;
     private ControllerVideoReceiver? _ctrlReceiver;
     private AudioSender? _audioSender;
     private AudioReceiver? _audioReceiver;
@@ -183,6 +184,11 @@ public sealed class RemoteSession : IAsyncDisposable
             _hostW = _hostSender.Width;
             _hostH = _hostSender.Height;
             channel.MessageReceived += OnHostMessage;
+            // 安全桌面（UAC/锁屏）时交由 SecureAgent 采集与注入
+            _secureBridge = new SecureDesktopBridge(channel);
+            _secureBridge.EnteredSecure += () => _hostSender?.Pause();
+            _secureBridge.ExitedSecure += () => _hostSender?.Resume();
+            _secureBridge.Start();
         }
 
         // 双向音频（设备不可用时不影响视频，见 PRD FR-07）
@@ -222,6 +228,7 @@ public sealed class RemoteSession : IAsyncDisposable
     private async Task TeardownMediaAsync()
     {
         _mediaStarted = false;
+        if (_secureBridge is not null) { await _secureBridge.DisposeAsync(); _secureBridge = null; }
         if (_channel is not null) _channel.MessageReceived -= OnHostMessage;
         _micSender?.Dispose(); _micSender = null;
         _audioSender?.Dispose(); _audioSender = null;
@@ -256,6 +263,12 @@ public sealed class RemoteSession : IAsyncDisposable
     {
         if (msg.Length < 1) return;
         var (type, payload) = ChannelMux.Unwrap(msg);
+        // 安全桌面期间，输入/画质转发给 SecureAgent 注入
+        if (_secureBridge is { IsActive: true } && (type == ChannelMsgType.Input || type == ChannelMsgType.Quality))
+        {
+            _secureBridge.SendToAgent(msg);
+            return;
+        }
         if (type == ChannelMsgType.Input)
         {
             var ev = JsonSerializer.Deserialize<InputEvent>(payload, SignalJson.Options);

@@ -150,6 +150,17 @@ powershell -ExecutionPolicy Bypass -File "%ProgramFiles%\TjViewer\uninstall-clie
 
 > 能力边界：Windows 在无人登录/锁屏时使用独立的安全桌面（Winlogon），普通进程无法采集该桌面。本服务保证“无需登录即可运行 + 登录后立即接管 + 异常自动恢复”，**不等同于**锁屏前画面采集；后者需单独部署带 `uiAccess` 的签名 SecureAgent。Ctrl+Alt+Del 也无法通过普通输入注入模拟。
 
+## 安全桌面支持（SecureAgent）
+
+UAC 提权弹窗、锁屏等使用独立的 **Winlogon 安全桌面**，普通进程无法采集或注入。客户端包内含 `TjViewer.SecureAgent.exe`（清单 `uiAccess="true"`，已 Authenticode 签名），由后台服务按需拉起：
+
+- 被控端 `SecureDesktopBridge` 每 0.5s 检测输入桌面；切到 Winlogon 时经控制管道 `TjViewer.Service.Control` 请求服务。
+- 服务复制自身 SYSTEM 令牌并设置 `TokenSessionId` 为目标会话，在 `winsta0\winlogon` 桌面拉起代理。因 uiAccess 应用不能经 `CreateProcessAsUser` 直接创建（返回 740），改由无 uiAccess 的 `cmd.exe` 中介、再 `CreateProcess` 派生代理以正确授予 uiAccess。
+- 代理复用 `HostVideoSender` 采集（DXGI 失败回退 GDI `CopyFromScreen`）→ H.264 编码 → 命名管道回传客户端，客户端转发到远程通道；控制端键鼠/画质消息经管道转发给代理注入。
+- 安全桌面结束（输入桌面回到 Default）或管道断开后代理自动退出，客户端恢复本地采集。
+
+> 依赖：须安装后台服务且代理位于 `Program Files` 等安全位置并签名（安装器已处理）。无人登录的登录前桌面采集仍受 Windows 限制；`Ctrl+Alt+Del` 无法模拟。
+
 ## 代码签名
 
 ```powershell

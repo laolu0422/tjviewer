@@ -78,4 +78,18 @@ internal static class Native
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool OpenProcessToken(IntPtr processHandle, uint desiredAccess, out IntPtr tokenHandle);
+
+    /// <summary>设置令牌会话 ID（TokenSessionId=12），需 SE_TCB_NAME（LocalSystem 具备）。</summary>
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetTokenInformation(IntPtr tokenHandle, int tokenInformationClass, ref uint tokenInformation, uint tokenInformationLength);
+
+    public const int TokenSessionId = 12;
 }

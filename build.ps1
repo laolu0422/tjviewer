@@ -97,6 +97,11 @@ if (-not $ServerOnly) {
     & $dn publish (Join-Path $root 'src/TjViewer.Service') -c Release -r win-x64 --self-contained true -o $svcOut
     if ($LASTEXITCODE -ne 0) { throw "后台服务发布失败" }
 
+    # 安全桌面代理（uiAccess）：发布到客户端根目录，须签名且随安装进入 Program Files
+    Write-Host "发布 SecureAgent（win-x64，自包含，uiAccess）…"
+    & $dn publish (Join-Path $root 'src/TjViewer.SecureAgent') -c Release -r win-x64 --self-contained true -o $out
+    if ($LASTEXITCODE -ne 0) { throw "SecureAgent 发布失败" }
+
     # 捆绑 ffmpeg（H.264 编解码依赖）
     $ff = Get-ChildItem (Join-Path $env:USERPROFILE '.local\share\ffmpeg') -Recurse -Filter ffmpeg.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
     if (-not $ff) { $ff = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source }
