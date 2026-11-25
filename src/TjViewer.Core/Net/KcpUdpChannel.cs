@@ -29,6 +29,10 @@ public class KcpUdpChannel : IAsyncDisposable
 
     public void SetRemote(IPEndPoint remote) => _remote = remote;
 
+    /// <summary>经本通道 UDP socket 查询 STUN 公网映射。</summary>
+    public Task<IPEndPoint?> QueryStunAsync(string stunHost, int stunPort = 19302)
+        => StunClient.GetPublicEndpointAsync(_udp, stunHost, stunPort);
+
     public void Start()
     {
         _recvTask = Task.Run(ReceiveLoop);
