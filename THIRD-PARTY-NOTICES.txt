@@ -1,0 +1,87 @@
+TjViewer 第三方组件与许可声明
+Third-Party Notices for TjViewer
+最后更新：2026-11-25
+
+本文件随 TjViewer 二进制分发包一起提供。TjViewer 自身适用根目录 LICENSE（保留所有权利）。
+下列第三方组件的版权归各自作者所有，并按各自的许可证提供；本文件不改变、也不扩展
+这些许可证授予你的权利。
+
+====================================================================
+一、独立可执行程序（随客户端分发）
+====================================================================
+
+1. FFmpeg（ffmpeg.exe）
+   - 版本/构建：ffmpeg-master-latest-win64-gpl（Windows x64，GPL 构建）
+   - 在本项目中的使用方式：作为独立子进程调用，通过标准输入/输出管道传输裸帧与
+     H.264 码流，未链接其库文件，与本项目仅为聚合关系。
+   - 许可证：GNU General Public License v3（GPL-3.0）
+   - 完整许可证文本：随 ffmpeg 分发的 LICENSE.txt，或 https://www.gnu.org/licenses/gpl-3.0.txt
+   - 对应源代码：https://ffmpeg.org/download.html
+                 源码仓库 https://git.ffmpeg.org/ffmpeg.git
+                 构建配置包含 --enable-gpl（未修改源代码）
+   - 说明：如需重新分发 ffmpeg.exe，须同时提供本声明与 GPL-3.0 全文，并保留上述源码
+     获取方式。FFmpeg 是独立程序，其 GPL 条款不改变 TjViewer 自身代码的授权状态。
+
+====================================================================
+二、NuGet 依赖（客户端）
+====================================================================
+包名                                          版本        许可证
+CommunityToolkit.Mvvm                         8.4.2       MIT
+NAudio                                        2.4.0       MIT
+  NAudio.Asio / NAudio.Core / NAudio.Midi
+  NAudio.Wasapi / NAudio.WinForms / NAudio.WinMM  2.4.0    MIT
+Concentus                                     2.2.3       BSD-3-Clause
+  （Opus 参考实现的 C# 移植；版权归 Skype Limited、Xiph.Org Foundation、
+    CSIRO、Microsoft Corporation 等贡献者所有）
+Vortice.Direct3D11                            3.8.2       MIT
+Vortice.DXGI                                  3.8.2       MIT
+Vortice.DirectX                               3.8.2       MIT
+Vortice.Mathematics                           2.1.0       MIT
+SharpGen.Runtime / SharpGen.Runtime.COM       2.4.2-beta  MIT
+
+====================================================================
+三、NuGet 依赖（服务端）
+====================================================================
+包名                                          版本        许可证
+Microsoft.EntityFrameworkCore.Sqlite          10.0.15     MIT
+  Microsoft.EntityFrameworkCore / .Abstractions
+  Microsoft.EntityFrameworkCore.Relational
+  Microsoft.EntityFrameworkCore.Sqlite.Core
+  Microsoft.Data.Sqlite.Core
+  Microsoft.Extensions.DependencyModel          10.0.15     MIT
+Microsoft.Bcl.Cryptography                    10.0.2      MIT
+SQLitePCLRaw.bundle_e_sqlite3                 2.1.13      Apache-2.0
+  SQLitePCLRaw.core / .lib.e_sqlite3
+  SQLitePCLRaw.provider.e_sqlite3             2.1.13      Apache-2.0
+e_sqlite3（SQLite 引擎）                      —           Public Domain
+Microsoft.AspNetCore.Authentication.JwtBearer 10.0.15     MIT
+System.IdentityModel.Tokens.Jwt               8.19.2      MIT
+  Microsoft.IdentityModel.Abstractions / .JsonWebTokens
+  Microsoft.IdentityModel.Logging / .Protocols
+  Microsoft.IdentityModel.Protocols.OpenIdConnect
+  Microsoft.IdentityModel.Tokens              8.19.2      MIT
+MailKit                                       4.18.2      MIT
+MimeKit                                       4.18.2      MIT
+BouncyCastle.Cryptography                     2.7.0       MIT
+Isopoh.Cryptography.Argon2                    2.0.0       CC-BY-4.0
+Isopoh.Cryptography.Blake2b                   2.0.0       CC-BY-4.0
+Isopoh.Cryptography.SecureArray               2.0.0       CC-BY-4.0
+  （作者：Michael Heyman；CC-BY-4.0 要求保留署名）
+
+====================================================================
+四、.NET 运行时（自包含发布携带）
+====================================================================
+Microsoft.NETCore.App 10.0.15
+Microsoft.WindowsDesktop.App 10.0.15（客户端）
+Microsoft.AspNetCore.App 10.0.15（服务端）
+许可证：MIT，版权归 .NET Foundation 与 Microsoft Corporation
+第三方声明：https://github.com/dotnet/runtime/blob/main/THIRD-PARTY-NOTICES.TXT
+
+====================================================================
+五、许可证全文获取
+====================================================================
+MIT:            https://opensource.org/license/mit
+BSD-3-Clause:   https://opensource.org/license/bsd-3-clause
+Apache-2.0:     https://www.apache.org/licenses/LICENSE-2.0
+CC-BY-4.0:      https://creativecommons.org/licenses/by/4.0/legalcode
+GPL-3.0:        https://www.gnu.org/licenses/gpl-3.0.txt
