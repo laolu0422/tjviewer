@@ -5,7 +5,7 @@ using System.Net.Sockets;
 namespace TjViewer.Core.Net;
 
 /// <summary>UDP + KCP 可靠通道（见 PRD FR-09 / M1）。绑定本地 UDP，KCP 输出经 UDP 发往对端。</summary>
-public class KcpUdpChannel : IAsyncDisposable
+public class KcpUdpChannel : IMessageChannel
 {
     private readonly UdpClient _udp;
     private readonly Kcp _kcp;

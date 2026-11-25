@@ -10,7 +10,7 @@ public static class FileSender
 {
     private const int ChunkSize = 32768;
 
-    public static async Task SendFileAsync(string path, KcpUdpChannel channel, IProgress<double>? progress = null, CancellationToken ct = default)
+    public static async Task SendFileAsync(string path, IMessageChannel channel, IProgress<double>? progress = null, CancellationToken ct = default)
     {
         var fi = new FileInfo(path);
         if (!fi.Exists) throw new FileNotFoundException("文件不存在", path);
@@ -71,7 +71,7 @@ public sealed class FileReceiver : IDisposable
         public long Received;
     }
 
-    private readonly KcpUdpChannel _channel;
+    private readonly IMessageChannel _channel;
     private readonly string _saveDir;
     private readonly Dictionary<string, State> _transfers = new();
     private readonly Action<byte[]> _onMessage;
@@ -80,7 +80,7 @@ public sealed class FileReceiver : IDisposable
     public event Action<string, string>? Completed;      // name, finalPath
     public event Action<string, string>? Failed;         // name, reason
 
-    public FileReceiver(KcpUdpChannel channel, string saveDir)
+    public FileReceiver(IMessageChannel channel, string saveDir)
     {
         _channel = channel;
         _saveDir = saveDir;

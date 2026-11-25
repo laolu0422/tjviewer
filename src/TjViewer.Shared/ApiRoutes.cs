@@ -11,4 +11,5 @@ public static class ApiRoutes
     public const string ChangePassword = "/api/auth/change-password";
     public const string Devices = "/api/devices";
     public const string SignalHub = "/ws/signal";
+    public const string RelayHub = "/ws/relay";
 }

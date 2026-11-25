@@ -13,6 +13,9 @@ public static class QualityProfiles
         new("极低", 640, 360, 15, 300),
     };
 
+    /// <summary>手动帧率可选值（与画质档位独立调节）。</summary>
+    public static readonly int[] FpsOptions = { 30, 25, 20, 15 };
+
     /// <summary>自适应帧率下限保护（见 PRD FR-05 / §6）。</summary>
     public const int MinAdaptiveFps = 15;
 

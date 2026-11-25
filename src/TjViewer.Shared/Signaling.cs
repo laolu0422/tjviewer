@@ -15,6 +15,7 @@ public static class SignalTypes
     public const string ConnectReady = "connect_ready";
     public const string ConnectFailed = "connect_failed";
     public const string PeerSignal = "peer_signal";
+    public const string RelaySwitch = "relay_switch";
     public const string SessionEnd = "session_end";
     public const string Heartbeat = "heartbeat";
     public const string Error = "error";
@@ -33,6 +34,15 @@ public sealed record ConnectRejectPayload(string SessionId, string? Reason);
 public sealed record ConnectReadyPayload(string SessionId, string HostDeviceId, string HostDeviceName, Capabilities Capabilities);
 public sealed record ConnectFailedPayload(string? SessionId, string Reason);
 public sealed record PeerSignalPayload(string SessionId, string Data);
+public sealed record RelaySwitchPayload(string SessionId);
+/// <summary>中转 WebSocket 握手（首条文本消息）。</summary>
+public sealed record RelayHelloPayload(string Token, string DeviceId, string SessionId);
+/// <summary>中转连接上的文本通知。</summary>
+public static class RelayText
+{
+    public const string Ready = "relay_ready";
+    public const string PeerLeft = "peer_left";
+}
 public sealed record SessionEndPayload(string SessionId, string? Reason);
 public sealed record ErrorPayload(string Code, string Message);
 

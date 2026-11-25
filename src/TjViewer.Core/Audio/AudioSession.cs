@@ -18,14 +18,14 @@ public sealed class AudioSender : IDisposable
     private readonly BufferedWaveProvider _buffer;
     private readonly MediaFoundationResampler _resampler;
     private readonly IOpusEncoder _encoder;
-    private readonly KcpUdpChannel _channel;
+    private readonly IMessageChannel _channel;
     private readonly byte _direction;
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _loop;
     private readonly short[] _frame = new short[960];
     private int _framePos;
 
-    public AudioSender(KcpUdpChannel channel, byte direction, bool loopback)
+    public AudioSender(IMessageChannel channel, byte direction, bool loopback)
     {
         _channel = channel;
         _direction = direction;
@@ -82,11 +82,11 @@ public sealed class AudioReceiver : IDisposable
     private readonly IOpusDecoder _decoder;
     private readonly BufferedWaveProvider _playBuffer;
     private readonly WasapiOut _out;
-    private readonly KcpUdpChannel _channel;
+    private readonly IMessageChannel _channel;
     private readonly byte _direction;
     private readonly Action<byte[]> _onMessage;
 
-    public AudioReceiver(KcpUdpChannel channel, byte direction)
+    public AudioReceiver(IMessageChannel channel, byte direction)
     {
         _channel = channel;
         _direction = direction;

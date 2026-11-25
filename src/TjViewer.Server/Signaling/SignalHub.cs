@@ -34,7 +34,7 @@ public class SignalHub
         if (hp is null || string.IsNullOrEmpty(hp.DeviceId)) { await CloseAsync(ws); return; }
 
         var principal = _tokens.Validate(hp.Token ?? "");
-        var uid = principal?.FindFirstValue(JwtRegisteredClaimNames.Sub);
+        var uid = principal is null ? null : ClaimsHelper.UserId(principal);
         if (uid is null)
         {
             await _cm.SendAsync(ws, SignalJson.Create(SignalTypes.Error, new ErrorPayload("unauthorized", "令牌无效或已过期")), ct);
@@ -109,6 +109,9 @@ public class SignalHub
             case SignalTypes.PeerSignal:
                 await OnPeerSignal(deviceId, SignalJson.Parse<PeerSignalPayload>(msg), ct);
                 break;
+            case SignalTypes.RelaySwitch:
+                await OnRelaySwitch(deviceId, SignalJson.Parse<RelaySwitchPayload>(msg), ct);
+                break;
             case SignalTypes.SessionEnd:
                 await OnSessionEnd(deviceId, SignalJson.Parse<SessionEndPayload>(msg), ct);
                 break;
@@ -182,6 +185,22 @@ public class SignalHub
         if (s.ControllerDeviceId != deviceId && s.HostDeviceId != deviceId) return; // 仅会话成员可中继
         var other = deviceId == s.ControllerDeviceId ? s.HostDeviceId : s.ControllerDeviceId;
         await _cm.SendToAsync(other, SignalJson.Create(SignalTypes.PeerSignal, p), ct);
+    }
+
+    private async Task OnRelaySwitch(string deviceId, RelaySwitchPayload? p, CancellationToken ct)
+    {
+        if (p is null) return;
+        var s = _cm.GetSession(p.SessionId);
+        if (s is null) return;
+        if (s.ControllerDeviceId != deviceId && s.HostDeviceId != deviceId) return; // 仅会话成员可发起
+        using (var scope = _scopeFactory.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var rec = await db.Sessions.FindAsync(new object?[] { s.Id }, ct);
+            if (rec is not null) { rec.Path = ConnectionPath.Relay; await db.SaveChangesAsync(ct); }
+        }
+        var other = deviceId == s.ControllerDeviceId ? s.HostDeviceId : s.ControllerDeviceId;
+        await _cm.SendToAsync(other, SignalJson.Create(SignalTypes.RelaySwitch, p), ct);
     }
 
     private async Task OnSessionEnd(string deviceId, SessionEndPayload? p, CancellationToken ct)

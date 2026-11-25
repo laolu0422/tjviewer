@@ -21,6 +21,8 @@ public class AppSession
 
     public string WsUrl => ServerUrl.Replace("https://", "wss://").Replace("http://", "ws://") + Shared.ApiRoutes.SignalHub;
 
+    public string RelayUrl => ServerUrl.Replace("https://", "wss://").Replace("http://", "ws://") + Shared.ApiRoutes.RelayHub;
+
     public void ApplyAuth(Shared.AuthResponse auth)
     {
         AccessToken = auth.Token;

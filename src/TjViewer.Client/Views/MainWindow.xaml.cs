@@ -33,7 +33,12 @@ public partial class MainWindow : Window
         {
             if (!_reallyClose) { e.Cancel = true; Hide(); } // 最小化到托盘而非退出
         };
-        Closed += async (_, _) => { _tray?.Dispose(); await _vm.ShutdownAsync(); };
+        Closed += async (_, _) =>
+        {
+            _tray?.Dispose();
+            await _vm.ShutdownAsync();
+            Application.Current.Shutdown();
+        };
     }
 
     private void InitTray()

@@ -43,6 +43,7 @@ builder.Services.AddSingleton(new TokenService(jwtKey));
 builder.Services.AddSingleton<SmtpService>();
 builder.Services.AddSingleton<ConnectionManager>();
 builder.Services.AddSingleton<SignalHub>();
+builder.Services.AddSingleton<RelayHub>();
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(o =>
@@ -148,6 +149,17 @@ app.Map("/ws/signal", async (HttpContext ctx, SignalHub hub) =>
     }
     using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
     await hub.HandleAsync(ctx, ws);
+});
+
+app.Map("/ws/relay", async (HttpContext ctx, RelayHub relay) =>
+{
+    if (!ctx.WebSockets.IsWebSocketRequest)
+    {
+        ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+        return;
+    }
+    using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
+    await relay.HandleAsync(ctx, ws);
 });
 
 app.Run();

@@ -12,12 +12,13 @@ namespace TjViewer.Core.Video;
 public sealed class HostVideoSender : IAsyncDisposable
 {
     private readonly IDesktopCapturer _capturer;
-    private readonly KcpUdpChannel _channel;
+    private readonly IMessageChannel _channel;
     private readonly string _ffmpeg;
     private readonly CancellationTokenSource _cts = new();
     private readonly object _encLock = new();
     private VideoEncoder? _encoder;
     private int _tierIndex;
+    private int _fps;
     private bool _adaptive = true;
     private int _stableCount;
     private readonly Task _loop;
@@ -25,14 +26,16 @@ public sealed class HostVideoSender : IAsyncDisposable
     public int Width => _capturer.Width;
     public int Height => _capturer.Height;
     public int CurrentTier => _tierIndex;
+    public int CurrentFps => _fps;
     public bool IsAdaptive => _adaptive;
 
-    public HostVideoSender(KcpUdpChannel channel, string ffmpeg, int initialTier = 1)
+    public HostVideoSender(IMessageChannel channel, string ffmpeg, int initialTier = 1)
     {
         _channel = channel;
         _ffmpeg = ffmpeg;
         _capturer = CreateCapturer();
         _tierIndex = Math.Clamp(initialTier, 0, QualityProfiles.Tiers.Length - 1);
+        _fps = QualityProfiles.Tiers[_tierIndex].MaxFps;
         CreateEncoder();
         var tier = QualityProfiles.Tiers[_tierIndex];
         var info = JsonSerializer.SerializeToUtf8Bytes(new VideoInfo(_capturer.Width, _capturer.Height, tier.MaxFps), SignalJson.Options);
@@ -57,19 +60,20 @@ public sealed class HostVideoSender : IAsyncDisposable
         {
             if (_encoder is not null) { try { _encoder.DisposeAsync().AsTask().Wait(); } catch { } }
             var tier = QualityProfiles.Tiers[_tierIndex];
-            _encoder = new VideoEncoder(_ffmpeg, _capturer.Width, _capturer.Height, tier.MaxFps, tier.MaxBitrateKbps);
+            _encoder = new VideoEncoder(_ffmpeg, _capturer.Width, _capturer.Height, _fps, tier.MaxBitrateKbps);
             _encoder.EncodedChunk += data => _channel.Send(ChannelMux.Wrap(ChannelMsgType.Video, data));
         }
     }
 
     private async Task CaptureLoop()
     {
-        var adaptWatch = System.Diagnostics.Stopwatch.StartNew();
         var frameWatch = System.Diagnostics.Stopwatch.StartNew();
+        var adaptWatch = System.Diagnostics.Stopwatch.StartNew();
+        long backlogStartMs = -1, lastUpgradeMs = 0;
         while (!_cts.IsCancellationRequested)
         {
-            var tier = QualityProfiles.Tiers[_tierIndex];
-            var frame = _capturer.CaptureFrame(Math.Max(1, 1000 / Math.Max(1, tier.MaxFps)));
+            int fps = Math.Max(1, _fps);
+            var frame = _capturer.CaptureFrame(Math.Max(1, 1000 / fps));
             if (frame is not null)
             {
                 lock (_encLock)
@@ -79,8 +83,8 @@ public sealed class HostVideoSender : IAsyncDisposable
                     if (_encoder is not null) { try { _encoder.EncodeFrameAsync(frame).Wait(); } catch { } }
                 }
             }
-            // DXGI 不会自动限帧，按档位帧率补齐间隔；GDI 采集后同样按档位节流
-            var budget = Math.Max(1, 1000 / Math.Max(1, tier.MaxFps));
+            // DXGI 不会自动限帧，按当前帧率补齐间隔；GDI 采集后同样节流
+            var budget = Math.Max(1, 1000 / fps);
             var remain = budget - (int)frameWatch.ElapsedMilliseconds;
             if (remain > 0)
             {
@@ -88,23 +92,53 @@ public sealed class HostVideoSender : IAsyncDisposable
             }
             frameWatch.Restart();
 
-            // 自适应：每秒评估拥塞；降档快、升档慢（连续 3 次空闲才升档）
-            if (_adaptive && adaptWatch.ElapsedMilliseconds >= 1000)
+            if (!_adaptive) continue;
+            long now = adaptWatch.ElapsedMilliseconds;
+            uint wait = _channel.WaitSnd;
+            if (wait > 50)
             {
-                adaptWatch.Restart();
-                uint wait = _channel.WaitSnd;
-                if (wait > 50 && _tierIndex < QualityProfiles.Tiers.Length - 1) { _tierIndex++; CreateEncoder(); _stableCount = 0; }
-                else if (wait < 5) { _stableCount++; if (_stableCount >= 3 && _tierIndex > 0) { _tierIndex--; CreateEncoder(); _stableCount = 0; } }
-                else _stableCount = 0;
+                // 积压须持续满 1 秒才降档，避免瞬时抖动导致画质骤降
+                if (backlogStartMs < 0) backlogStartMs = now;
+                if (now - backlogStartMs >= 1000 && _tierIndex < QualityProfiles.Tiers.Length - 1)
+                {
+                    _tierIndex++;
+                    _fps = QualityProfiles.Tiers[_tierIndex].MaxFps;
+                    CreateEncoder();
+                    backlogStartMs = now;
+                    _stableCount = 0;
+                    lastUpgradeMs = now;
+                }
+            }
+            else
+            {
+                backlogStartMs = -1;
+                // 升档慢：每秒评估一次，连续 3 次空闲才升一档
+                if (now - lastUpgradeMs >= 1000)
+                {
+                    lastUpgradeMs = now;
+                    if (wait < 5)
+                    {
+                        _stableCount++;
+                        if (_stableCount >= 3 && _tierIndex > 0)
+                        {
+                            _tierIndex--;
+                            _fps = QualityProfiles.Tiers[_tierIndex].MaxFps;
+                            CreateEncoder();
+                            _stableCount = 0;
+                        }
+                    }
+                    else _stableCount = 0;
+                }
             }
         }
     }
 
-    /// <summary>手动固定档位（见 PRD FR-05 手动模式）。</summary>
-    public void SetManualTier(int index)
+    /// <summary>手动固定：画质档位与帧率独立设置（见 PRD FR-05 手动模式）。fps&lt;=0 时用档位默认帧率。</summary>
+    public void SetManual(int tier, int fps)
     {
         _adaptive = false;
-        _tierIndex = Math.Clamp(index, 0, QualityProfiles.Tiers.Length - 1);
+        _tierIndex = Math.Clamp(tier, 0, QualityProfiles.Tiers.Length - 1);
+        _fps = fps > 0 ? Math.Clamp(fps, 5, 60) : QualityProfiles.Tiers[_tierIndex].MaxFps;
         CreateEncoder();
     }
 
@@ -124,7 +158,7 @@ public sealed class HostVideoSender : IAsyncDisposable
 /// <summary>控制端视频接收：KCP 通道 → H.264 解码 → BGRA 帧事件（供渲染）。</summary>
 public sealed class ControllerVideoReceiver : IAsyncDisposable
 {
-    private readonly KcpUdpChannel _channel;
+    private readonly IMessageChannel _channel;
     private readonly string _ffmpeg;
     private readonly ConcurrentQueue<byte[]> _queue = new();
     private readonly CancellationTokenSource _cts = new();
@@ -135,7 +169,7 @@ public sealed class ControllerVideoReceiver : IAsyncDisposable
     public event Action<byte[]>? FrameDecoded;
     public VideoInfo? Info { get; private set; }
 
-    public ControllerVideoReceiver(KcpUdpChannel channel, string ffmpeg)
+    public ControllerVideoReceiver(IMessageChannel channel, string ffmpeg)
     {
         _channel = channel;
         _ffmpeg = ffmpeg;

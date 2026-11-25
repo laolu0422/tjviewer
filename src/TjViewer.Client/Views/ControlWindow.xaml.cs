@@ -13,6 +13,8 @@ public partial class ControlWindow : Window
 {
     private readonly RemoteSession _session;
     private WriteableBitmap? _bmp;
+    private bool _updatingUi;
+    private Point _lastMove = new(-1, -1);
 
     public ControlWindow(RemoteSession session)
     {
@@ -20,26 +22,88 @@ public partial class ControlWindow : Window
         _session = session;
         Title = "TjViewer - 远程控制";
         _session.FrameDecoded += OnFrame;
-        _session.Status += s => Dispatcher.Invoke(() => StatusText.Text = s);
-        _session.ChannelReady += () => Dispatcher.Invoke(() => StatusText.Text = "直连已建立");
-        _session.FileCompleted += (n, path) => Dispatcher.Invoke(() => MessageBox.Show(this, $"已接收：{n}\n{path}", "文件传输"));
-        _session.FileFailed += (n, r) => Dispatcher.Invoke(() => MessageBox.Show(this, $"接收失败：{n}（{r}）", "文件传输"));
-        _session.FileProgress += (n, p) => Dispatcher.Invoke(() => StatusText.Text = $"接收 {n}：{p:P0}");
+        _session.Status += s => Dispatcher.BeginInvoke(() => StatusText.Text = s);
+        _session.PathChanged += p => Dispatcher.BeginInvoke(() => PathText.Text = p == ConnectionPath.P2P ? "P2P 直连" : "服务器中转");
+        _session.FileCompleted += (n, path) => Dispatcher.BeginInvoke(() => MessageBox.Show(this, $"已接收：{n}\n{path}", "文件传输"));
+        _session.FileFailed += (n, r) => Dispatcher.BeginInvoke(() => MessageBox.Show(this, $"接收失败：{n}（{r}）", "文件传输"));
+        _session.FileProgress += (n, p) => Dispatcher.BeginInvoke(() => StatusText.Text = $"接收 {n}：{p:P0}");
         Closed += async (_, _) =>
         {
             _session.FrameDecoded -= OnFrame;
             await _session.DisposeAsync();
         };
         VideoImage.Focusable = true;
-        QualityBox.SelectedIndex = 0;
+        _updatingUi = true;
+        QualityBox.SelectedIndex = 1;
+        FpsBox.SelectedIndex = 1;
+        QualityBox.IsEnabled = false; // 初始为自适应模式
+        FpsBox.IsEnabled = false;
+        _updatingUi = false;
         Loaded += (_, _) => VideoImage.Focus();
     }
 
     private void OnQualityChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
-        int idx = QualityBox.SelectedIndex;
-        if (idx <= 0) _session.SendQuality(new QualityRequest("adaptive"));
-        else _session.SendQuality(new QualityRequest("manual", idx - 1));
+        if (_updatingUi || _session is null) return;
+        if (AdaptiveBtn.IsChecked != true) SendManualQuality();
+    }
+
+    private void OnFpsChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (_updatingUi || _session is null) return;
+        if (AdaptiveBtn.IsChecked != true) SendManualQuality();
+    }
+
+    /// <summary>手动模式：画质档位与帧率独立下发。</summary>
+    private void SendManualQuality()
+    {
+        int tier = Math.Max(0, QualityBox.SelectedIndex);
+        int fps = 0;
+        if (FpsBox.SelectedItem is System.Windows.Controls.ComboBoxItem ci && int.TryParse(ci.Content?.ToString(), out var f)) fps = f;
+        _session.SendQuality(new QualityRequest("manual", tier, fps));
+    }
+
+    private void OnAdaptiveChecked(object sender, RoutedEventArgs e)
+    {
+        if (_updatingUi || _session is null) return;
+        _updatingUi = true;
+        LockBtn.IsChecked = false;
+        QualityBox.IsEnabled = false;
+        FpsBox.IsEnabled = false;
+        _updatingUi = false;
+        _session.SendQuality(new QualityRequest("adaptive"));
+    }
+
+    private void OnAdaptiveUnchecked(object sender, RoutedEventArgs e)
+    {
+        if (_updatingUi || _session is null) return;
+        _updatingUi = true;
+        bool locked = LockBtn.IsChecked == true;
+        QualityBox.IsEnabled = !locked;
+        FpsBox.IsEnabled = !locked;
+        _updatingUi = false;
+        if (!locked) SendManualQuality();
+    }
+
+    /// <summary>强制锁定：关闭自适应并固定当前画质与帧率。</summary>
+    private void OnLockChecked(object sender, RoutedEventArgs e)
+    {
+        if (_updatingUi || _session is null) return;
+        _updatingUi = true;
+        AdaptiveBtn.IsChecked = false;
+        QualityBox.IsEnabled = false;
+        FpsBox.IsEnabled = false;
+        _updatingUi = false;
+        SendManualQuality();
+    }
+
+    private void OnLockUnchecked(object sender, RoutedEventArgs e)
+    {
+        if (_updatingUi || _session is null) return;
+        _updatingUi = true;
+        QualityBox.IsEnabled = true;
+        FpsBox.IsEnabled = true;
+        _updatingUi = false;
     }
 
     private void OnMicOn(object sender, RoutedEventArgs e) => _session.StartMic();
@@ -58,7 +122,7 @@ public partial class ControlWindow : Window
 
     private void OnFrame(byte[] bgra)
     {
-        Dispatcher.Invoke(() =>
+        Dispatcher.BeginInvoke(() =>
         {
             var info = _session.VideoInfo;
             if (info is null) return;
@@ -87,6 +151,9 @@ public partial class ControlWindow : Window
     private void OnMouseMove(object sender, MouseEventArgs e)
     {
         var p = MapToHost(e.GetPosition(VideoImage));
+        var ip = new Point((int)p.X, (int)p.Y);
+        if (ip == _lastMove) return; // 合并重复坐标，减少输入消息量
+        _lastMove = ip;
         _session.SendInput(new InputEvent("move", (int)p.X, (int)p.Y));
     }
 

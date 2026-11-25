@@ -69,7 +69,7 @@ public partial class MainViewModel : ObservableObject
     private void OnConnectReady(ConnectReadyPayload p)
     {
         if (_signal is null) return;
-        var session = new RemoteSession(_signal, p.SessionId, isController: true);
+        var session = new RemoteSession(_signal, _s, p.SessionId, isController: true);
         _sessions.Add(session);
         _ = session.StartAsync();
         OpenControl?.Invoke(session);
@@ -79,7 +79,7 @@ public partial class MainViewModel : ObservableObject
     {
         if (_signal is null) return;
         await _signal.Accept(sessionId);
-        var session = new RemoteSession(_signal, sessionId, isController: false);
+        var session = new RemoteSession(_signal, _s, sessionId, isController: false);
         _sessions.Add(session);
         _ = session.StartAsync();
     }
