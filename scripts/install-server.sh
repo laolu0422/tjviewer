@@ -21,8 +21,9 @@ SERVICE="tjviewer"
 RUN_USER="tjviewer"
 PORT="${TJVIEWER_PORT:-5000}"
 VERSION="${TJVIEWER_VERSION:-latest}"
-PROXY="${TJVIEWER_PROXY:-}"
 PKG_FILE=""
+# GitHub 直连失败时依次尝试的公共加速镜像（第三方服务，仅用于网络受限环境）
+MIRRORS=("https://gh-proxy.com" "https://ghproxy.net" "https://ghfast.top")
 
 log() { printf '\033[35m[TjViewer]\033[0m %s\n' "$*"; }
 die() { printf '\033[31m[TjViewer] %s\033[0m\n' "$*" >&2; exit 1; }
@@ -31,12 +32,11 @@ usage() {
 用法: install-server.sh [选项]
   --file <tar.gz>       使用本地安装包（离线安装）
   --port <端口>         监听端口，默认 5000
-  --proxy <url>         下载安装包走代理，如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080
   --uninstall           卸载服务与程序（保留 /var/lib/tjviewer 数据）
 环境变量:
   TJVIEWER_VERSION      指定 Release 标签，默认 latest
   TJVIEWER_PUBLIC_URL   对外访问地址，默认自动取本机第一个 IPv4
-  TJVIEWER_PROXY        同 --proxy
+说明: 安装包默认直连 GitHub 下载，失败时自动切换公共加速镜像。
 USAGE
 }
 
@@ -44,7 +44,6 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --file) PKG_FILE="${2:-}"; shift 2 ;;
         --port) PORT="${2:-}"; shift 2 ;;
-        --proxy) PROXY="${2:-}"; shift 2 ;;
         --uninstall) UNINSTALL=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) die "未知参数：$1" ;;
@@ -80,13 +79,18 @@ else
         URL="https://github.com/$REPO/releases/download/$VERSION/$ASSET"
     fi
     SRC="$TMP_DIR/$ASSET"
-    CURL_OPTS=(-fL --retry 3 --connect-timeout 15 --speed-time 60 --speed-limit 1024)
-    if [ -n "$PROXY" ]; then
-        CURL_OPTS+=(--proxy "$PROXY")
-        log "使用代理：$PROXY"
-    fi
+    CURL_OPTS=(-fL --retry 2 --connect-timeout 15 --speed-time 60 --speed-limit 1024)
     log "下载 $URL"
-    curl "${CURL_OPTS[@]}" -o "$SRC" "$URL" || die "下载失败（国内网络可加 --proxy http://127.0.0.1:7890，或改用 --file 离线安装）"
+    if ! curl "${CURL_OPTS[@]}" -o "$SRC" "$URL"; then
+        for m in "${MIRRORS[@]}"; do
+            log "直连 GitHub 失败，尝试加速镜像：$m"
+            if curl "${CURL_OPTS[@]}" -o "$SRC" "$m/$URL"; then
+                log "已通过镜像下载"
+                break
+            fi
+        done
+    fi
+    [ -s "$SRC" ] || die "下载失败（网络受限时可先用 --file 离线安装）"
 fi
 
 # ---- 运行依赖：.NET 自包含包仍需系统 ICU ----

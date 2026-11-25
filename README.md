@@ -66,17 +66,13 @@ pwsh -File build.ps1
 
 服务器包为自包含发布，目标机无需安装 .NET；需要 x86_64 与 systemd。
 
-**一行安装（直连 GitHub）**：
+**一行安装（自动选择线路）**：优先直连 GitHub；直连失败时会自动改用公共加速镜像（`gh-proxy.com` / `ghproxy.net` / `ghfast.top`）下载安装包，无需手动配置代理：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/laolu0422/tjviewer/main/scripts/install-server.sh | sudo bash
+rm -f /tmp/tjviewer-install.sh; U=https://raw.githubusercontent.com/laolu0422/tjviewer/main/scripts/install-server.sh; curl -fsSL "$U" -o /tmp/tjviewer-install.sh || curl -fsSL "https://gh-proxy.com/$U" -o /tmp/tjviewer-install.sh; sudo bash /tmp/tjviewer-install.sh
 ```
 
-**一行安装（国内网络，自带代理）**：把 `http://127.0.0.1:7890` 换成你的代理地址（支持 `http://` 与 `socks5://`），脚本与安装包都会走该代理：
-
-```bash
-curl -x http://127.0.0.1:7890 -fsSL https://raw.githubusercontent.com/laolu0422/tjviewer/main/scripts/install-server.sh | sudo bash -s -- --proxy http://127.0.0.1:7890
-```
+> 加速镜像为第三方服务，仅用于无法直连 GitHub 的网络环境；对来源校验要求较高时请使用下方离线安装。
 
 安装脚本会：解压到 `/opt/tjviewer`、数据放 `/var/lib/tjviewer`、生成随机管理员口令与 JWT 密钥、写入 `tjviewer.service` 并开机自启、安装 `tjviewer` 管理命令。默认监听 `0.0.0.0:5000`，安装结束会打印访问地址与管理员口令（也可用 `sudo tjviewer config` 查看）。
 
@@ -95,7 +91,7 @@ sudo tjviewer restart      # 重启
 sudo bash install-server.sh --file /tmp/tjviewer-server-linux-x64.tar.gz
 ```
 
-可选参数：`--port 5000` 指定端口、`--proxy` 指定下载代理、`--uninstall` 卸载（保留数据）、`TJVIEWER_PUBLIC_URL` 指定对外地址。若启用 ufw，脚本会自动放行端口；其他防火墙请手动放行 TCP 5000。
+可选参数：`--port 5000` 指定端口、`--uninstall` 卸载（保留数据）、`TJVIEWER_PUBLIC_URL` 指定对外地址。若启用 ufw，脚本会自动放行端口；其他防火墙请手动放行 TCP 5000。
 
 > 公网部署建议在 5000 端口前加 Nginx/Caddy 反向代理并启用 HTTPS（客户端服务器地址填 `https://域名`）。
 
