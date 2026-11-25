@@ -11,6 +11,7 @@ publish/
 *.db-shm
 *.db-wal
 jwt.key
+admin.credentials
 *.secret
 
 # IDE / 工具

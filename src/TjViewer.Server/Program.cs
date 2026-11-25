@@ -87,6 +87,27 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.EnsureCreated();
+
+    // 引导首个管理员：优先配置，否则随机生成强口令写入本地 admin.credentials（已 gitignore，不入库/不入日志）
+    if (!db.Users.Any(u => u.IsAdmin))
+    {
+        var au = builder.Configuration["Admin:Username"] ?? "admin";
+        var ap = builder.Configuration["Admin:Password"];
+        if (string.IsNullOrWhiteSpace(ap))
+        {
+            ap = Convert.ToBase64String(RandomNumberGenerator.GetBytes(18));
+            var credFile = Path.Combine(builder.Environment.ContentRootPath, "admin.credentials");
+            File.WriteAllText(credFile, $"username={au}\npassword={ap}\n");
+        }
+        db.Users.Add(new User
+        {
+            Username = au,
+            Email = builder.Configuration["Admin:Email"] ?? $"{au}@tjviewer.local",
+            PasswordHash = PasswordHasher.Hash(ap),
+            IsAdmin = true,
+        });
+        db.SaveChanges();
+    }
 }
 
 if (!app.Environment.IsDevelopment())
@@ -109,9 +130,11 @@ app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseWebSockets();
+app.UseStaticFiles();
 
 app.MapAuth();
 app.MapDevices();
+app.MapAdmin();
 
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok", time = DateTimeOffset.UtcNow }));
 
