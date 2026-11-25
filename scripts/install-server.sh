@@ -84,7 +84,7 @@ fi
 if ! ldconfig -p 2>/dev/null | grep -q 'libicu'; then
     log "安装 libicu（.NET 全球化依赖）"
     if command -v apt-get >/dev/null 2>&1; then
-        apt-get update -qq && apt-get install -y -qq libicu-dev >/dev/null || die "libicu 安装失败"
+        apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libicu-dev >/dev/null || die "libicu 安装失败"
     else
         die "缺少 libicu，请先安装（如 libicu-dev）"
     fi

@@ -91,6 +91,8 @@ sudo bash install-server.sh --file /tmp/tjviewer-server-linux-x64.tar.gz
 
 可选参数：`--port 5000` 指定端口、`--uninstall` 卸载（保留数据）、`TJVIEWER_PUBLIC_URL` 指定对外地址。若启用 ufw，脚本会自动放行端口；其他防火墙请手动放行 TCP 5000。
 
+> 公网部署建议在 5000 端口前加 Nginx/Caddy 反向代理并启用 HTTPS（客户端服务器地址填 `https://域名`）。
+
 ## 运行
 
 **服务端**
