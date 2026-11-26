@@ -34,6 +34,9 @@ public partial class App : Application
         var login = new LoginWindow(_session!);
         if (login.ShowDialog() != true)
         {
+            // 用户在登录页关闭窗口 = 主动退出：写退出标记，
+            // 否则后台服务会在 3 秒后把客户端重新拉起，表现为“窗口关不掉”。
+            ServiceIntegration.MarkUserExit();
             Shutdown();
             return;
         }
