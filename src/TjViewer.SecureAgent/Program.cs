@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.IO.Pipes;
 using System.Text.Json;
 using TjViewer.Core;
@@ -26,7 +27,7 @@ public static class Program
         if (string.IsNullOrEmpty(pipeName)) { Log("缺少 --pipe 参数"); return 1; }
 
         RuntimeTuning.Apply();
-        Log($"SecureAgent 启动：桌面={SecureDesktop.GetInputDesktopName()} 管道={pipeName}");
+        Log($"SecureAgent 启动：桌面={SecureDesktop.GetInputDesktopName()} 管道={pipeName} 进程={Environment.ProcessId}");
 
         using var cts = new CancellationTokenSource();
         var exit = new TaskCompletionSource();
@@ -42,25 +43,30 @@ public static class Program
             channel = new PipeMessageChannel(pipe);
             channel.Closed += () => cts.Cancel();
 
+            // 先接收消息：代理初始化编码器期间到达的画质/输入消息先缓存，避免丢失
+            var pending = new ConcurrentQueue<byte[]>();
+            channel.MessageReceived += msg =>
+            {
+                var s = sender;
+                if (s is null) { pending.Enqueue(msg); return; }
+                OnMessage(msg, s);
+            };
+
             var ffmpeg = FFmpegLocator.Find();
             if (ffmpeg is null) { Log("未找到 ffmpeg"); return 1; }
-            sender = new HostVideoSender(channel, ffmpeg);
-            channel.MessageReceived += msg => OnMessage(msg, sender);
 
-            // 安全桌面结束（输入桌面回到 Default）即退出
-            _ = Task.Run(async () =>
-            {
-                while (!cts.IsCancellationRequested)
-                {
-                    if (!SecureDesktop.IsSecureDesktopActive()) { Log("安全桌面已结束，退出"); cts.Cancel(); return; }
-                    try { await Task.Delay(500, cts.Token); } catch { return; }
-                }
-            });
+            // 安全桌面强制使用 GDI 采集：DXGI Desktop Duplication 在 winlogon 安全桌面通常
+            // 返回 AccessLost 或采集到黑屏，GDI 才能稳定抓取 UAC/锁屏画面。
+            // 生命周期只跟随管道：安全桌面结束时由客户端关闭管道触发退出，
+            // 不再周期性判断输入桌面（切换瞬间误判会导致代理提前退出、画面黑屏）。
+            sender = new HostVideoSender(channel, ffmpeg, forceGdi: true, gdiAttachInputDesktop: true);
+            while (pending.TryDequeue(out var queued)) OnMessage(queued, sender);
+            Log($"采集已启动：{sender.Width}x{sender.Height}（GDI，绑定输入桌面）");
 
             await exit.Task;
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex) { Log("异常：" + ex.Message); }
+        catch (Exception ex) { Log("异常：" + ex); }
         finally
         {
             if (sender is not null) await sender.DisposeAsync();

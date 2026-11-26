@@ -9,10 +9,28 @@ using Microsoft.IdentityModel.Tokens;
 using TjViewer.Server;
 using TjViewer.Server.Data;
 using TjViewer.Server.Endpoints;
+using TjViewer.Server.Logging;
 using TjViewer.Server.Services;
 using TjViewer.Server.Signaling;
+using TjViewer.Shared.Logging;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// ---- 本地文件日志：%ProgramData%\TjViewer\logs\server-yyyyMMdd.log（不可写时自动降级并告警）----
+// 与设备端 client-yyyyMMdd.log 使用同一套目录/切割/格式规则，便于现场按日期取证排查。
+builder.Logging.ClearProviders();
+builder.Logging.SetMinimumLevel(LogLevel.Debug);
+builder.Logging.AddSimpleConsole(o =>
+{
+    o.SingleLine = true;
+    o.TimestampFormat = "yyyy-MM-dd HH:mm:ss.fff ";
+});
+builder.Logging.AddDebug();
+builder.Logging.AddProvider(new FileLoggerProvider("server"));
+// 框架自身的调试输出量大（EF SQL、Kestrel 连接细节），限制到告警/信息级，
+// 保留应用与业务日志的 DEBUG 级别，避免运行日志被无意义内容淹没。
+builder.Logging.AddFilter("Microsoft.EntityFrameworkCore", LogLevel.Warning);
+builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Information);
 
 // ---- 数据库（EF Core 参数化，禁止拼接 SQL，见 PRD §7.2）----
 builder.Services.AddDbContext<AppDbContext>(o =>
@@ -84,6 +102,13 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
 
 var app = builder.Build();
 
+// ---- 启动/停止与未处理异常记录（便于按日期日志定位线上问题）----
+FileLog.Info($"TjViewer 服务端启动：版本={System.Reflection.Assembly.GetExecutingAssembly().GetName().Version} " +
+             $"环境={app.Environment.EnvironmentName} 内容根={app.Environment.ContentRootPath} 日志目录={FileLog.ActiveDirectory}");
+app.Lifetime.ApplicationStarted.Register(() =>
+    FileLog.Info("服务端已开始监听：" + string.Join(", ", app.Urls)));
+app.Lifetime.ApplicationStopping.Register(() => FileLog.Info("服务端正在停止"));
+
 // ---- 初始化数据库 ----
 using (var scope = app.Services.CreateScope())
 {
@@ -111,6 +136,20 @@ using (var scope = app.Services.CreateScope())
         db.SaveChanges();
     }
 }
+
+// ---- 未处理异常：写入文件日志后继续按框架默认行为处理 ----
+app.Use(async (ctx, next) =>
+{
+    try
+    {
+        await next();
+    }
+    catch (Exception ex)
+    {
+        FileLog.Error($"请求处理异常：{ctx.Request.Method} {ctx.Request.Path}{ctx.Request.QueryString}", ex);
+        throw;
+    }
+});
 
 // HTTPS 重定向仅在服务端自身启用 HTTPS 时生效。
 // 推荐的部署方式是 Nginx/Caddy 终止 TLS、后端走 HTTP；此时若强行启用重定向，

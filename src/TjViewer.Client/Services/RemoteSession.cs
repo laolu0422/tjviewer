@@ -8,6 +8,7 @@ using TjViewer.Core.Input;
 using TjViewer.Core.Net;
 using TjViewer.Core.Video;
 using TjViewer.Shared;
+using TjViewer.Shared.Logging;
 
 namespace TjViewer.Client.Services;
 
@@ -145,6 +146,7 @@ public sealed class RemoteSession : IAsyncDisposable
         if (Interlocked.Exchange(ref _relaySwitching, 1) == 1) return;
         try
         {
+            FileLog.Warn($"会话 {_sessionId} 切换服务器中转：{reason}");
             Status?.Invoke($"正在切换服务器中转（{reason}）…");
             await TeardownMediaAsync();
             var kcp = _kcp;
@@ -172,6 +174,7 @@ public sealed class RemoteSession : IAsyncDisposable
         _channel = channel;
         _path = connPath;
         _mediaStarted = true;
+        FileLog.Info($"会话 {_sessionId} 媒体通道已建立：{connPath} 角色={(_isController ? "控制端" : "被控端")} 模式={_mode}");
 
         if (_isController)
         {
@@ -186,8 +189,26 @@ public sealed class RemoteSession : IAsyncDisposable
             channel.MessageReceived += OnHostMessage;
             // 安全桌面（UAC/锁屏）时交由 SecureAgent 采集与注入
             _secureBridge = new SecureDesktopBridge(channel);
-            _secureBridge.EnteredSecure += () => _hostSender?.Pause();
-            _secureBridge.ExitedSecure += () => _hostSender?.Resume();
+            _secureBridge.EnteredSecure += () =>
+            {
+                FileLog.Warn("检测到安全桌面，本地采集暂停，改由 SecureAgent 接管");
+                _hostSender?.Pause();
+                // 把当前画质参数同步给代理，避免 UAC 期间分辨率/帧率跳变
+                var sender = _hostSender;
+                if (sender is not null)
+                {
+                    var q = sender.IsAdaptive
+                        ? new QualityRequest("adaptive")
+                        : new QualityRequest("manual", sender.CurrentTier, sender.CurrentFps, sender.CurrentBitrateKbps);
+                    _secureBridge.SendToAgent(ChannelMux.Wrap(ChannelMsgType.Quality,
+                        JsonSerializer.SerializeToUtf8Bytes(q, SignalJson.Options)));
+                }
+            };
+            _secureBridge.ExitedSecure += () =>
+            {
+                FileLog.Info("安全桌面结束，恢复本地采集");
+                _hostSender?.Resume();
+            };
             _secureBridge.Start();
         }
 
@@ -228,6 +249,7 @@ public sealed class RemoteSession : IAsyncDisposable
     private async Task TeardownMediaAsync()
     {
         _mediaStarted = false;
+        FileLog.Info($"会话 {_sessionId} 拆除媒体通道");
         if (_secureBridge is not null) { await _secureBridge.DisposeAsync(); _secureBridge = null; }
         if (_channel is not null) _channel.MessageReceived -= OnHostMessage;
         _micSender?.Dispose(); _micSender = null;

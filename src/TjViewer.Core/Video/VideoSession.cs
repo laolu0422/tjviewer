@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text.Json;
+using System.Threading.Channels;
 using TjViewer.Core.Net;
 using TjViewer.Shared;
 
@@ -9,87 +11,169 @@ namespace TjViewer.Core.Video;
 /// 被控端视频发送：采集 → H.264 编码 → 通道。
 /// 手动模式帧率/码率独立可调（受服务端 4K/120fps/10Mbps 限制）；
 /// 无论画面是否变化都按设定帧率持续推流，保证操作反馈及时。
+///
+/// 性能关键：采集与编码解耦。采集线程只负责把画面写进固定尺寸的帧池并投递有界队列，
+/// 编码线程异步消费；队列满或帧池耗尽时直接丢弃新帧（低延迟优先）。
+/// 这样慢编码器（Intel QSV 首帧初始化、高负载软编）不会反压采集，
+/// 从根本上消除“编码阻塞采集 → 帧率骤降/延迟持续累积”的卡顿。
 /// </summary>
 public sealed class HostVideoSender : IAsyncDisposable
 {
+    private const int FramePoolSize = 3;
+    private const int EncodeQueueCapacity = 2;
+
     private readonly IDesktopCapturer _capturer;
     private readonly IMessageChannel _channel;
     private readonly string _ffmpeg;
     private readonly CancellationTokenSource _cts = new();
-    private readonly object _encLock = new();
+    private readonly object _encoderLock = new();
+    private readonly object _poolLock = new();
+    private readonly Stack<byte[]> _freeFrames = new();
+    private readonly Channel<FrameJob> _encodeQueue;
+    private readonly Task _captureLoop;
+    private readonly Task _encodeLoop;
     private VideoEncoder? _encoder;
-    private int _tierIndex;
-    private int _fps;
-    private int _bitrateKbps;
+    private int _encoderBitrateKbps;
     private int _outWidth;
     private int _outHeight;
-    private bool _adaptive = true;
-    private int _stableCount;
+    private int _inFlight;
+    private int _disposed;
     private volatile bool _paused;
-    private readonly Task _loop;
+    private volatile bool _adaptive = true;
+    private volatile bool _forceRecreate;
+    private volatile int _tierIndex;
+    private volatile int _fps;
+    private volatile int _bitrateKbps;
+    private int _stableCount;
+
+    private readonly record struct FrameJob(byte[] Data, int Width, int Height, int Fps, int BitrateKbps);
 
     /// <summary>采集到的原始桌面尺寸。</summary>
     public int Width => _capturer.Width;
     public int Height => _capturer.Height;
     /// <summary>实际编码输出尺寸（超过 4K 时按比例缩小）。</summary>
-    public int OutputWidth => _outWidth;
-    public int OutputHeight => _outHeight;
+    public int OutputWidth => Volatile.Read(ref _outWidth);
+    public int OutputHeight => Volatile.Read(ref _outHeight);
     public int CurrentTier => _tierIndex;
     public int CurrentFps => _fps;
     public int CurrentBitrateKbps => _bitrateKbps;
     public bool IsAdaptive => _adaptive;
 
-    public HostVideoSender(IMessageChannel channel, string ffmpeg, int initialTier = 1)
+    /// <param name="channel">远端会话通道。</param>
+    /// <param name="ffmpeg">ffmpeg 路径。</param>
+    /// <param name="initialTier">初始画质档位。</param>
+    /// <param name="forceGdi">强制 GDI 采集（安全桌面代理必须开启：DXGI 在 winlogon 桌面不可用）。</param>
+    /// <param name="gdiAttachInputDesktop">GDI 采集线程是否绑定输入桌面（安全桌面下必须开启）。</param>
+    public HostVideoSender(IMessageChannel channel, string ffmpeg, int initialTier = 1,
+        bool forceGdi = false, bool gdiAttachInputDesktop = false)
     {
         _channel = channel;
         _ffmpeg = ffmpeg;
-        _capturer = CreateCapturer();
+        _capturer = CreateCapturer(forceGdi, gdiAttachInputDesktop);
         _tierIndex = Math.Clamp(initialTier, 0, QualityProfiles.Tiers.Length - 1);
         _fps = VideoLimits.ClampFps(QualityProfiles.Tiers[_tierIndex].MaxFps);
         _bitrateKbps = VideoLimits.ClampBitrate(QualityProfiles.Tiers[_tierIndex].MaxBitrateKbps);
-        CreateEncoder();
-        _loop = Task.Run(CaptureLoop);
+        (_outWidth, _outHeight) = VideoLimits.ClampSize(_capturer.Width, _capturer.Height);
+
+        _encodeQueue = Channel.CreateBounded<FrameJob>(new BoundedChannelOptions(EncodeQueueCapacity)
+        {
+            SingleReader = true,
+            SingleWriter = true,
+            FullMode = BoundedChannelFullMode.Wait,
+        });
+        _encodeLoop = Task.Run(EncodeLoop);
+        _captureLoop = Task.Run(CaptureLoop);
+        SendVideoInfo(_outWidth, _outHeight, _fps);
     }
 
-    /// <summary>优先 DXGI Desktop Duplication，不可用时回退 GDI。</summary>
-    private static IDesktopCapturer CreateCapturer()
+    /// <summary>优先 DXGI Desktop Duplication，不可用时回退 GDI；安全桌面强制 GDI。</summary>
+    private static IDesktopCapturer CreateCapturer(bool forceGdi, bool attachInputDesktop)
     {
-        try { return new DxgiCapturer(); }
-        catch (Exception ex)
+        if (!forceGdi)
         {
-            System.Diagnostics.Trace.WriteLine("DXGI 采集不可用，回退 GDI：" + ex.Message);
-            return new GdiCapturer();
+            try { return new DxgiCapturer(); }
+            catch (Exception ex)
+            {
+                Trace.WriteLine("DXGI 采集不可用，回退 GDI：" + ex.Message);
+            }
         }
+        return new GdiCapturer(attachInputDesktop);
     }
 
-    private void CreateEncoder()
+    /// <summary>编码线程：按帧携带的参数消费队列，参数变化时重建编码器（避免采集线程等待编码器初始化）。</summary>
+    private async Task EncodeLoop()
     {
-        lock (_encLock)
+        try
         {
-            if (_encoder is not null) { try { _encoder.DisposeAsync().AsTask().Wait(); } catch { } }
-            var (ow, oh) = VideoLimits.ClampSize(_capturer.Width, _capturer.Height);
-            _outWidth = ow;
-            _outHeight = oh;
-            _fps = VideoLimits.ClampFps(_fps);
-            _bitrateKbps = VideoLimits.ClampBitrate(_bitrateKbps);
-            _encoder = new VideoEncoder(_ffmpeg, _capturer.Width, _capturer.Height, _fps, _bitrateKbps, null, ow, oh);
-            _encoder.EncodedChunk += data => _channel.Send(ChannelMux.Wrap(ChannelMsgType.Video, data));
-            SendVideoInfo();
+            while (await _encodeQueue.Reader.WaitToReadAsync(_cts.Token))
+            {
+                while (_encodeQueue.Reader.TryRead(out var job))
+                {
+                    try
+                    {
+                        VideoEncoder? encoder;
+                        lock (_encoderLock)
+                        {
+                            if (_forceRecreate || _encoder is null || _encoder.Width != job.Width ||
+                                _encoder.Height != job.Height || _encoder.Fps != job.Fps ||
+                                _encoderBitrateKbps != job.BitrateKbps)
+                            {
+                                _forceRecreate = false;
+                                CreateEncoderLocked(job.Width, job.Height, job.Fps, job.BitrateKbps);
+                            }
+                            encoder = _encoder;
+                        }
+                        if (encoder is not null) await encoder.EncodeFrameAsync(job.Data);
+                    }
+                    catch (Exception ex)
+                    {
+                        FFmpegLocator.Emit("视频编码写入失败：" + ex.Message);
+                    }
+                    finally
+                    {
+                        ReturnFrame(job.Data);
+                    }
+                }
+            }
         }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { FFmpegLocator.Emit("编码循环异常：" + ex.Message); }
+    }
+
+    /// <summary>创建编码器并通知对端；必须持有 <see cref="_encoderLock"/>。</summary>
+    private void CreateEncoderLocked(int width, int height, int fps, int bitrateKbps)
+    {
+        if (_encoder is not null)
+        {
+            try { _encoder.DisposeAsync().AsTask().Wait(2000); } catch { }
+            _encoder = null;
+        }
+
+        var (ow, oh) = VideoLimits.ClampSize(width, height);
+        Volatile.Write(ref _outWidth, ow);
+        Volatile.Write(ref _outHeight, oh);
+        _encoderBitrateKbps = bitrateKbps;
+        _encoder = new VideoEncoder(_ffmpeg, width, height, fps, bitrateKbps, null, ow, oh);
+        _encoder.EncodedChunk += data => _channel.Send(ChannelMux.Wrap(ChannelMsgType.Video, data));
+        SendVideoInfo(ow, oh, fps);
     }
 
     /// <summary>周期性重发视频协商信息，避免对端晚加入时错过首包。</summary>
-    private void SendVideoInfo()
+    private void SendVideoInfo(int width, int height, int fps)
     {
-        var info = JsonSerializer.SerializeToUtf8Bytes(new VideoInfo(_outWidth, _outHeight, _fps), SignalJson.Options);
-        _channel.Send(ChannelMux.Wrap(ChannelMsgType.Control, info));
+        try
+        {
+            var info = JsonSerializer.SerializeToUtf8Bytes(new VideoInfo(width, height, fps), SignalJson.Options);
+            _channel.Send(ChannelMux.Wrap(ChannelMsgType.Control, info));
+        }
+        catch { }
     }
 
     private async Task CaptureLoop()
     {
-        var frameWatch = System.Diagnostics.Stopwatch.StartNew();
-        var adaptWatch = System.Diagnostics.Stopwatch.StartNew();
-        var infoWatch = System.Diagnostics.Stopwatch.StartNew();
+        var frameWatch = Stopwatch.StartNew();
+        var adaptWatch = Stopwatch.StartNew();
+        var infoWatch = Stopwatch.StartNew();
         long backlogStartMs = -1, lastUpgradeMs = 0;
         while (!_cts.IsCancellationRequested)
         {
@@ -99,24 +183,37 @@ public sealed class HostVideoSender : IAsyncDisposable
                 try { await Task.Delay(50, _cts.Token); } catch { break; }
                 continue;
             }
+
             int fps = Math.Max(1, _fps);
-            // 只等待极短时间：无更新时立刻复用上一帧，避免采集阻塞编码节拍（排队时延最小化）
-            var frame = _capturer.CaptureFrame(Math.Clamp(1000 / fps / 4, 2, 4));
-            if (frame is not null)
+            int w = _capturer.Width, h = _capturer.Height;
+            int length = w * h * 4;
+
+            // 帧池/编码队列已满说明编码跟不上：直接丢弃本帧，绝不阻塞采集（低延迟优先）
+            if (length > 0 && Volatile.Read(ref _inFlight) < FramePoolSize)
             {
-                lock (_encLock)
+                var buffer = RentFrame(length);
+                Interlocked.Increment(ref _inFlight);
+                bool captured;
+                try { captured = _capturer.CaptureFrameInto(buffer, Math.Clamp(1000 / fps / 4, 2, 4)); }
+                catch { captured = false; }
+
+                if (!captured)
                 {
-                    // 分辨率变化（DXGI 显示模式切换）时按新尺寸重建编码器
-                    if (_encoder is null || _encoder.Width != _capturer.Width || _encoder.Height != _capturer.Height) CreateEncoder();
-                    if (_encoder is not null) { try { _encoder.EncodeFrameAsync(frame).Wait(); } catch { } }
+                    ReturnFrame(buffer);
+                }
+                else if (!_encodeQueue.Writer.TryWrite(new FrameJob(buffer, w, h, fps, _bitrateKbps)))
+                {
+                    ReturnFrame(buffer); // 队列满：丢弃新帧，避免延迟累积
                 }
             }
+
             if (infoWatch.ElapsedMilliseconds >= 1000)
             {
                 infoWatch.Restart();
-                lock (_encLock) SendVideoInfo();
+                SendVideoInfo(OutputWidth, OutputHeight, _fps);
             }
-            // DXGI 不会自动限帧，按当前帧率补齐间隔；GDI 采集后同样节流
+
+            // 按当前帧率补齐间隔（DXGI 有新帧时立即返回，GDI 采集后同样节流）
             var budget = Math.Max(1, 1000 / fps);
             var remain = budget - (int)frameWatch.ElapsedMilliseconds;
             if (remain > 0)
@@ -137,7 +234,6 @@ public sealed class HostVideoSender : IAsyncDisposable
                     _tierIndex++;
                     _fps = VideoLimits.ClampFps(QualityProfiles.Tiers[_tierIndex].MaxFps);
                     _bitrateKbps = VideoLimits.ClampBitrate(QualityProfiles.Tiers[_tierIndex].MaxBitrateKbps);
-                    CreateEncoder();
                     backlogStartMs = now;
                     _stableCount = 0;
                     lastUpgradeMs = now;
@@ -158,7 +254,6 @@ public sealed class HostVideoSender : IAsyncDisposable
                             _tierIndex--;
                             _fps = VideoLimits.ClampFps(QualityProfiles.Tiers[_tierIndex].MaxFps);
                             _bitrateKbps = VideoLimits.ClampBitrate(QualityProfiles.Tiers[_tierIndex].MaxBitrateKbps);
-                            CreateEncoder();
                             _stableCount = 0;
                         }
                     }
@@ -175,7 +270,7 @@ public sealed class HostVideoSender : IAsyncDisposable
         _tierIndex = Math.Clamp(tier, 0, QualityProfiles.Tiers.Length - 1);
         _fps = VideoLimits.ClampFps(fps);
         _bitrateKbps = VideoLimits.ClampBitrate(bitrateKbps);
-        CreateEncoder();
+        // 编码器由编码线程在下一帧按新参数重建，避免与编码写入竞争管道
     }
 
     public void SetAdaptive()
@@ -183,22 +278,51 @@ public sealed class HostVideoSender : IAsyncDisposable
         _adaptive = true;
         _fps = VideoLimits.ClampFps(QualityProfiles.Tiers[_tierIndex].MaxFps);
         _bitrateKbps = VideoLimits.ClampBitrate(QualityProfiles.Tiers[_tierIndex].MaxBitrateKbps);
-        CreateEncoder();
     }
 
     /// <summary>暂停本地采集/编码（安全桌面由 SecureAgent 接管时调用）。</summary>
     public void Pause() => _paused = true;
-    /// <summary>恢复本地采集/编码。</summary>
-    public void Resume() => _paused = false;
+    /// <summary>恢复本地采集/编码；重建编码器强制输出新关键帧，避免解码端沿用代理码流的参考帧产生花屏。</summary>
+    public void Resume()
+    {
+        _forceRecreate = true;
+        _paused = false;
+    }
+
+    private byte[] RentFrame(int length)
+    {
+        lock (_poolLock)
+        {
+            while (_freeFrames.Count > 0)
+            {
+                var buffer = _freeFrames.Pop();
+                if (buffer.Length == length) return buffer; // 尺寸不符（分辨率变化）的直接废弃
+            }
+        }
+        return GC.AllocateUninitializedArray<byte>(length);
+    }
+
+    private void ReturnFrame(byte[] buffer)
+    {
+        Interlocked.Decrement(ref _inFlight);
+        lock (_poolLock)
+        {
+            if (_freeFrames.Count < FramePoolSize) _freeFrames.Push(buffer);
+        }
+    }
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) == 1) return;
         _cts.Cancel();
-        try { await _loop; } catch { }
-        VideoEncoder? enc;
-        lock (_encLock) { enc = _encoder; _encoder = null; }
-        if (enc is not null) await enc.DisposeAsync();
+        _encodeQueue.Writer.TryComplete();
+        try { await _captureLoop; } catch { }
+        try { await _encodeLoop; } catch { }
+        VideoEncoder? encoder;
+        lock (_encoderLock) { encoder = _encoder; _encoder = null; }
+        if (encoder is not null) { try { await encoder.DisposeAsync(); } catch { } }
         _capturer.Dispose();
+        _cts.Dispose();
     }
 }
 

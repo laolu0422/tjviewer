@@ -9,8 +9,8 @@ namespace TjViewer.Core.Video;
 
 /// <summary>
 /// DXGI Desktop Duplication 桌面采集（见 PRD FR-05）：GPU 侧取帧，画面不再合成鼠标指针，
-/// 由控制端本地渲染原生光标。桌面无更新时返回上一帧，配合发送端按设定帧率持续推流，
-/// 避免静止画面停止刷新导致操作反馈延迟。
+/// 由控制端本地渲染原生光标。仅在桌面有新帧时返回 true，静止画面不重复编码，
+/// 由发送端按帧率节拍轮询；帧直接写入调用方提供的帧池缓冲区，避免每次采集分配大数组。
 /// 初始化失败时由调用方回退 <see cref="GdiCapturer"/>。
 /// </summary>
 public sealed class DxgiCapturer : IDesktopCapturer
@@ -24,7 +24,6 @@ public sealed class DxgiCapturer : IDesktopCapturer
     private ID3D11Texture2D? _staging;
     private int _stagingWidth;
     private int _stagingHeight;
-    private byte[] _frame = Array.Empty<byte>();
 
     public int Width { get; private set; }
     public int Height { get; private set; }
@@ -84,68 +83,59 @@ public sealed class DxgiCapturer : IDesktopCapturer
         Width = (int)desc.ModeDescription.Width;
         Height = (int)desc.ModeDescription.Height;
         if (Width <= 0 || Height <= 0) throw new NotSupportedException("显示输出尺寸无效");
-
-        _frame = new byte[Width * Height * 4];
     }
 
-    public byte[]? CaptureFrame(int timeoutMs)
+    public bool CaptureFrameInto(byte[] target, int timeoutMs)
     {
         lock (_lock)
         {
-            if (_duplication is null) return null;
+            if (_duplication is null) return false;
             try
             {
-                return CaptureOnce(timeoutMs);
+                return CaptureOnceInto(target, timeoutMs);
             }
             catch (SharpGenException ex) when (ex.ResultCode.Code == ResultCode.AccessLost.Code)
             {
                 // 锁屏、切换分辨率/UAC 等会重置桌面复制，需要重建
                 LastError = "桌面复制被重置，重建中";
                 try { RealizeDuplication(); } catch (Exception e) { LastError = e.Message; }
-                return null;
+                return false;
             }
             catch (Exception ex)
             {
                 LastError = ex.Message;
-                return null;
+                return false;
             }
         }
     }
 
-    private byte[]? CaptureOnce(int timeoutMs)
+    private bool CaptureOnceInto(byte[] target, int timeoutMs)
     {
-        var gotDesktop = false;
         var r = _duplication!.AcquireNextFrame((uint)Math.Max(0, timeoutMs), out var info, out var resource);
-        var timedOut = r.Code == ResultCode.WaitTimeout.Code;
-        if (!timedOut)
-        {
-            if (r.Failure) r.CheckError();
-            try
-            {
-                if (info.AccumulatedFrames > 0 && resource is not null)
-                {
-                    using (resource)
-                    using (var tex = resource!.QueryInterface<ID3D11Texture2D>())
-                    {
-                        EnsureStaging(tex);
-                        _context!.CopyResource(_staging!, tex);
-                        var map = _context.Map(_staging!, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
-                        try { CopyRows(map.DataPointer, (int)map.RowPitch); }
-                        finally { _context.Unmap(_staging!, 0); }
-                    }
-                    gotDesktop = true;
-                }
-            }
-            finally
-            {
-                try { _duplication.ReleaseFrame(); } catch (SharpGenException) { }
-            }
-        }
+        if (r.Code == ResultCode.WaitTimeout.Code) return false;
+        if (r.Failure) r.CheckError();
 
-        if (_frame.Length == 0) return null;
-        // 无桌面更新/超时也返回上一帧：由发送端按帧率持续编码推流，保证操作即时反馈
-        _ = gotDesktop;
-        return _frame;
+        try
+        {
+            if (info.AccumulatedFrames == 0 || resource is null) return false;
+            using (resource)
+            using (var tex = resource!.QueryInterface<ID3D11Texture2D>())
+            {
+                EnsureStaging(tex);
+                // 分辨率刚变化：调用方本帧的缓冲区长度不匹配，丢弃由下一轮按新尺寸取帧
+                if (target.Length < Width * Height * 4) return false;
+
+                _context!.CopyResource(_staging!, tex);
+                var map = _context.Map(_staging!, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
+                try { CopyRows(map.DataPointer, (int)map.RowPitch, target); }
+                finally { _context.Unmap(_staging!, 0); }
+            }
+            return true;
+        }
+        finally
+        {
+            try { _duplication.ReleaseFrame(); } catch (SharpGenException) { }
+        }
     }
 
     private void EnsureStaging(ID3D11Texture2D tex)
@@ -167,25 +157,24 @@ public sealed class DxgiCapturer : IDesktopCapturer
         _stagingWidth = w;
         _stagingHeight = h;
 
-        // 分辨率变化时同步尺寸（调用方据 Width/Height 重建编码器与通知对端）
+        // 分辨率变化时同步尺寸（调用方据 Width/Height 重建帧池与编码器）
         if (w != Width || h != Height)
         {
             Width = w;
             Height = h;
-            _frame = new byte[w * h * 4];
         }
     }
 
-    private void CopyRows(IntPtr src, int pitch)
+    private void CopyRows(IntPtr src, int pitch, byte[] target)
     {
         var rowBytes = Width * 4;
         if (pitch == rowBytes)
         {
-            Marshal.Copy(src, _frame, 0, _frame.Length);
+            Marshal.Copy(src, target, 0, rowBytes * Height);
             return;
         }
         for (var y = 0; y < Height; y++)
-            Marshal.Copy(src + y * pitch, _frame, y * rowBytes, rowBytes);
+            Marshal.Copy(src + y * pitch, target, y * rowBytes, rowBytes);
     }
 
     public void Dispose()

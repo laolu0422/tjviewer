@@ -2,6 +2,7 @@ using System.Windows;
 using TjViewer.Client.Services;
 using TjViewer.Client.ViewModels;
 using TjViewer.Shared;
+using TjViewer.Shared.Logging;
 
 namespace TjViewer.Client.Views;
 
@@ -42,12 +43,13 @@ public partial class MainWindow : Window
 
             // 已记住的关闭行为：直接生效，不再弹窗
             var behavior = _s.Settings.CloseBehavior;
-            if (behavior == "minimize") { e.Cancel = true; Hide(); return; }
-            if (behavior == "exit") { BeginFullExit(); return; }
+            if (behavior == "minimize") { e.Cancel = true; Hide(); FileLog.Info("关闭主窗口：按已记住设置最小化到托盘"); return; }
+            if (behavior == "exit") { FileLog.Info("关闭主窗口：按已记住设置完全退出"); BeginFullExit(); return; }
 
             // 弹窗让用户选择关闭行为
             var dlg = new CloseOptionsWindow { Owner = this };
             var ok = dlg.ShowDialog() == true;
+            FileLog.Info($"关闭选项弹窗：确认={ok} 选择={(ok ? dlg.Choice.ToString() : "取消")} 记住={ok && dlg.Remember}");
             if (ok && dlg.Choice == CloseChoice.Exit)
             {
                 if (dlg.Remember) SaveCloseBehavior("exit");
@@ -77,6 +79,7 @@ public partial class MainWindow : Window
     /// <summary>完全关闭：标记用户退出（后台服务本会话不再拉起），随后窗口关闭触发清理。</summary>
     private void BeginFullExit()
     {
+        FileLog.Info("开始完全关闭：标记用户退出并终止关联后台进程");
         _reallyClose = true;
         ServiceIntegration.MarkUserExit();
     }
@@ -101,6 +104,7 @@ public partial class MainWindow : Window
             _ => "ask",
         };
         SaveCloseBehavior(dlg.Remember ? behavior : "ask");
+        FileLog.Info($"托盘设置关闭行为：{behavior}（记住={dlg.Remember}）");
     }
 
     private void InitTray()
@@ -139,6 +143,7 @@ public partial class MainWindow : Window
         if (AutoStart.IsEnabled())
         {
             AutoStart.Disable();
+            FileLog.Info("开机自启已关闭（下次启动生效）");
         }
         else
         {
@@ -148,6 +153,7 @@ public partial class MainWindow : Window
                 "开机自启", MessageBoxButton.YesNo, MessageBoxImage.Question);
             if (r != MessageBoxResult.Yes) return;
             AutoStart.Enable();
+            FileLog.Info("开机自启已开启（下次启动生效，当前会话不受影响）");
         }
         UpdateAutoStartButton();
     }

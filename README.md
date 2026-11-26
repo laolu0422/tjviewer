@@ -4,7 +4,7 @@
 
 ## 功能特性
 
-- **远程桌面观看**：DXGI Desktop Duplication 采集（失败自动回退 GDI）→ H.264 编码 → KCP/UDP 通道；**静止画面也按设定帧率持续推流**，操作反馈接近实时；画面不再合成远端光标，由控制端渲染本地鼠标。支持 NVIDIA NVENC、Intel QSV、AMD AMF 硬件编码与 D3D11VA 硬件解码，探测失败自动回退 libx264 / 软件解码。
+- **远程桌面观看**：DXGI Desktop Duplication 采集（失败自动回退 GDI）→ H.264 编码 → KCP/UDP 通道；**采集与编码解耦**（帧池 + 有界队列，编码慢时丢帧而不阻塞采集），画面变化即编码推流、静止画面不重复编码，操作反馈接近实时；画面不再合成远端光标，由控制端渲染本地鼠标。支持 NVIDIA NVENC、Intel QSV、AMD AMF 硬件编码与 D3D11VA 硬件解码，探测失败自动回退 libx264 / 软件解码。
 - **画质调节**：自适应模式按发送队列拥塞升降档（积压持续满 1 秒才降档）；手动模式用滑块独立调节**帧率（15/30/40/60/90/120）**与**码率（2/4/6/8/10 Mbps）**，可一键锁定；服务端硬限制 4K / 120fps / 10Mbps，超限请求会被钳制或拦截。
 - **连接方式**：STUN 打洞建立 P2P 直连，UDP 上跑 KCP（低延迟、抗丢包）；打洞失败自动回退**服务器全功能中转**（WebSocket 转发视频/音频/输入/文件/控制全部消息）；单条通道按首字节复用各类消息。
 - **远程键鼠**：键盘扫描码注入（支持扩展键）、绝对坐标鼠标、按键、滚轮、文本输入；控制窗口激活时通过低级键盘钩子接管键盘，**Alt+Tab、Win 组合等系统快捷键完整透传到被控端**。
@@ -154,10 +154,11 @@ powershell -ExecutionPolicy Bypass -File "%ProgramFiles%\TjViewer\uninstall-clie
 
 UAC 提权弹窗、锁屏等使用独立的 **Winlogon 安全桌面**，普通进程无法采集或注入。客户端包内含 `TjViewer.SecureAgent.exe`（清单 `uiAccess="true"`，已 Authenticode 签名），由后台服务按需拉起：
 
-- 被控端 `SecureDesktopBridge` 每 0.5s 检测输入桌面；切到 Winlogon 时经控制管道 `TjViewer.Service.Control` 请求服务。
+- 被控端 `SecureDesktopBridge` 每 0.3s 检测输入桌面；**普通权限打不开输入桌面（UAC/锁屏）同样判定为安全桌面**，连续 2 次采样一致才切换，过滤桌面切换抖动。
+- 切换时**先创建管道服务端，再经控制管道 `TjViewer.Service.Control` 请求服务拉起代理**，避免代理先连接、管道不存在的竞态。
 - 服务复制自身 SYSTEM 令牌并设置 `TokenSessionId` 为目标会话，在 `winsta0\winlogon` 桌面拉起代理。因 uiAccess 应用不能经 `CreateProcessAsUser` 直接创建（返回 740），改由无 uiAccess 的 `cmd.exe` 中介、再 `CreateProcess` 派生代理以正确授予 uiAccess。
-- 代理复用 `HostVideoSender` 采集（DXGI 失败回退 GDI `CopyFromScreen`）→ H.264 编码 → 命名管道回传客户端，客户端转发到远程通道；控制端键鼠/画质消息经管道转发给代理注入。
-- 安全桌面结束（输入桌面回到 Default）或管道断开后代理自动退出，客户端恢复本地采集。
+- 代理**强制 GDI 采集**（DXGI 在 winlogon 桌面通常不可用/黑屏），并把采集线程绑定到输入桌面（`OpenInputDesktop` + `SetThreadDesktop`）→ H.264 编码 → 命名管道回传客户端，客户端转发到远程通道；控制端键鼠/画质消息经管道转发给代理注入。
+- 代理生命周期**只跟随管道**：不再周期性自检输入桌面（切换瞬间误判会导致提前退出、UAC 黑屏）；安全桌面结束由客户端关闭管道触发退出，客户端恢复本地采集并重建编码器强制输出关键帧。
 
 > 依赖：须安装后台服务且代理位于 `Program Files` 等安全位置并签名（安装器已处理）。无人登录的登录前桌面采集仍受 Windows 限制；`Ctrl+Alt+Del` 无法模拟。
 
@@ -241,12 +242,33 @@ dotnet run --project src/TjViewer.Client
   - `TJVIEWER_HWACCEL=none`：强制软件解码
 - 诊断：`FFmpegLocator.Diagnostics` 事件会输出实际选用的编码器、解码方式与探测失败原因。
 
+## 本地日志
+
+客户端、服务端、后台服务与安全桌面代理都会在 `%ProgramData%\TjViewer\logs` 写入按天切割的日志，现场排查无需额外工具（1.0.6 的日志缺失根因与修复验证见 [docs/日志问题根因分析与修复验证.md](docs/日志问题根因分析与修复验证.md)）：
+
+| 文件 | 来源 | 说明 |
+| --- | --- | --- |
+| `client-yyyyMMdd.log` | 被控/控制客户端 | 启动、登录、关闭选项、自启、会话建立/中转、安全桌面接管、未处理异常堆栈 |
+| `server-yyyyMMdd.log` | 服务端 | 启动与监听地址、请求处理异常、框架日志（EF 仅 Warning 以上） |
+| `service-yyyyMMdd.log` | `TjViewerService` | 会话巡检与拉起记录（原有格式保持不变） |
+| `secure-agent-yyyyMMdd.log` | SecureAgent | 安全桌面代理启动/退出与异常（原有格式保持不变） |
+| `secure-launch.log` | 服务拉起代理 | SYSTEM 令牌/桌面切换诊断（原有格式保持不变） |
+
+- **格式**：`yyyy-MM-dd HH:mm:ss.fff [LEVEL] [应用名] 消息`，异常附完整堆栈；UTF-8 追加、写后立即刷盘。
+- **级别**：DEBUG / INFO / WARN / ERROR，默认全部写入；客户端 `ffmpeg` 诊断输出记录为 DEBUG。
+- **切割**：按自然日切换文件，不改动既有服务/代理日志的命名与切割规则。
+- **兜底**：首选目录不可写时自动降级到 `%LOCALAPPDATA%\TjViewer\logs` → 应用目录 `logs` → `%TEMP%\TjViewer\logs`，
+  并在可用目录写入 `logging-alert.log`（含失败原因与切换结果）；日志系统自身异常不会影响业务。
+- **自检**：设置环境变量 `TJVIEWER_LOG_SELFTEST=1` 启动任一端，会一次性写入四个级别与异常样例，用于发布后验证。
+- **自定义目录**：设置 `TJVIEWER_LOG_DIR` 可覆盖首选目录（便于临时排查或容器部署）。
+
 ## 低延迟与流畅度优化
 
-以“操作跟手、画面不积压”为目标，链路各环节都做了针对性调优：
+以“操作跟手、画面不积压”为目标，链路各环节都做了针对性调优（与 uu 远程的机制对标、差距与后续路线见 [docs/远程控制机制分析与优化.md](docs/远程控制机制分析与优化.md)）：
 
 - **KCP**：`NoDelay(1, 5, 2, 1)`（5ms 快节拍、快速重传、关闭拥塞控制）+ 512 段收发窗口，避免 10Mbps 高码率下窗口不足；UDP 收发缓冲提升到 4MB，降低突发丢包。
-- **采集**：DXGI 仅等待 2–4ms，无桌面更新时复用上一帧；发送端按设定帧率精确节拍、静止画面持续推流，保证任意时刻操作都能立即反馈。
+- **采集**：DXGI 仅等待 2–4ms，且只在新帧到达时采集；画面直接写入复用的帧池缓冲，不再每次分配大数组；静止画面不重复编码（控制端保持最后一帧），输入引起的画面变化在一个帧周期内送达。
+- **采集/编码解耦**：帧池 3 帧 + 有界编码队列 2 帧，队列满或帧池耗尽立即丢弃新帧，慢编码器（QSV 初始化、软编高负载）不会反压采集，避免帧率骤降与延迟持续累积；编码器在独立线程按新参数重建。
 - **编码**：NVENC `-preset p1 -tune ull -delay 0`、QSV `-async_depth 1`、AMF `ultralowlatency`，统一 `-flags low_delay`、无 B 帧、`-flush_packets 1`，缩短编码器内部排队。
 - **解码**：`-flags low_delay -fflags nobuffer -analyzeduration 0`；软件解码使用 slice 线程，避免 frame 线程引入整帧时延。
 - **系统调度**：客户端启动即 `timeBeginPeriod(1)` 提升时钟精度（默认 15.6ms 粒度会直接抬高排队时延），进程优先级 High（安装器 IFEO + 运行时兜底，ffmpeg 继承）。
