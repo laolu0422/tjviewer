@@ -112,7 +112,11 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
-if (!app.Environment.IsDevelopment())
+// HTTPS 重定向仅在服务端自身启用 HTTPS 时生效。
+// 推荐的部署方式是 Nginx/Caddy 终止 TLS、后端走 HTTP；此时若强行启用重定向，
+// 会因找不到 HTTPS 端口而在每次启动时输出 “Failed to determine the https port” 告警。
+var httpsEnabled = builder.Configuration.GetValue<bool>("Https:Enabled");
+if (!app.Environment.IsDevelopment() && httpsEnabled)
 {
     app.UseHsts();
     app.UseHttpsRedirection();
